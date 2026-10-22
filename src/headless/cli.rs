@@ -139,6 +139,25 @@ pub enum Commands {
         #[arg(short, long, default_value = "native")]
         engine: String,
     },
+
+    /// View, list, or export built-in LaTeX documentation manuals bundled within Laketex
+    Docs {
+        /// Document name or kind: manual, theming, api, architecture, or all (default)
+        #[arg(short, long, default_value = "all")]
+        doc: String,
+
+        /// Print the LaTeX source code directly to stdout
+        #[arg(short, long)]
+        print: bool,
+
+        /// Export the LaTeX documentation files to a target directory
+        #[arg(short, long)]
+        export: Option<PathBuf>,
+
+        /// List available built-in documentation manuals
+        #[arg(short, long)]
+        list: bool,
+    },
 }
 
 impl CliArgs {
@@ -478,6 +497,77 @@ impl CliArgs {
 
                 if report.error_count > 0 {
                     std::process::exit(1);
+                }
+            }
+            Commands::Docs {
+                doc,
+                print,
+                export,
+                list,
+            } => {
+                let docs = crate::document::BuiltinDoc::all();
+                if list || (!print && export.is_none()) {
+                    println!("============================================================");
+                    println!("  Laketex Built-in LaTeX Documentation Library");
+                    println!("============================================================");
+                    println!();
+                    for d in docs {
+                        println!("  * [{:?}] {} ({})", d.kind, d.title, d.filename);
+                        println!("    Summary: {}", d.description);
+                        println!("    Lines:   {}", d.content.lines().count());
+                        println!();
+                    }
+                    println!("CLI Usage Examples:");
+                    println!("  laketex docs --list                      # List available docs");
+                    println!("  laketex docs --print --doc manual        # Print manual to stdout");
+                    println!("  laketex docs --export ./docs             # Export all docs to folder");
+                    println!("  laketex docs --export ./docs --doc theming");
+                    if !print && export.is_none() {
+                        return Ok(());
+                    }
+                }
+
+                if let Some(target_dir) = export {
+                    std::fs::create_dir_all(&target_dir)?;
+                    let to_export: Vec<&crate::document::BuiltinDoc> =
+                        if doc.eq_ignore_ascii_case("all") {
+                            docs.iter().collect()
+                        } else {
+                            docs.iter()
+                                .filter(|d| {
+                                    let k = format!("{:?}", d.kind).to_lowercase();
+                                    k.contains(&doc.to_lowercase())
+                                        || d.filename.to_lowercase().contains(&doc.to_lowercase())
+                                })
+                                .collect()
+                        };
+
+                    if to_export.is_empty() {
+                        eprintln!("Warning: No documentation manuals matched '{}'", doc);
+                    } else {
+                        for d in to_export {
+                            let out_path = target_dir.join(d.filename);
+                            std::fs::write(&out_path, d.content)?;
+                            println!("✓ Exported {} -> {}", d.filename, out_path.display());
+                        }
+                    }
+                }
+
+                if print {
+                    let matching = docs.iter().find(|d| {
+                        let k = format!("{:?}", d.kind).to_lowercase();
+                        k.contains(&doc.to_lowercase())
+                            || d.filename.to_lowercase().contains(&doc.to_lowercase())
+                    });
+
+                    if let Some(d) = matching {
+                        print!("{}", d.content);
+                    } else {
+                        eprintln!(
+                            "Document '{}' not found. Available: manual, theming, api, architecture",
+                            doc
+                        );
+                    }
                 }
             }
         }

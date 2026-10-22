@@ -1,0 +1,97 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{hyperref}
+
+\geometry{margin=1in}
+
+\title{\textbf{Laketex Headless REST API \& CLI Reference}}
+\author{Laketex Automation \& Tooling Group}
+\date{October 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Laketex can be run headlessly without a graphical display for automated build pipelines, continuous integration, remote typesetting, and programmatic document audits. This document specifies the command-line interface commands and the embedded HTTP REST API endpoints.
+\end{abstract}
+
+\section{Command-Line Interface (CLI)}
+
+The single binary \texttt{laketex.exe} provides seven subcommands:
+
+\subsection{\texttt{laketex compile}}
+Compiles a \LaTeX\ source file directly into PDF format.
+\begin{verbatim}
+laketex compile document.tex -o output.pdf --engine native
+laketex compile document.tex -o output.pdf --engine tectonic --export-log err.md
+\end{verbatim}
+
+\subsection{\texttt{laketex check}}
+Lints the document for syntax errors, unclosed environments, and missing packages.
+\begin{verbatim}
+laketex check document.tex
+laketex check document.tex --format json
+\end{verbatim}
+
+\subsection{\texttt{laketex debug}}
+Performs a deep typographic audit of matrices, math formulas, and commands.
+\begin{verbatim}
+laketex debug document.tex
+laketex debug document.tex -f json -o audit.json
+\end{verbatim}
+
+\subsection{\texttt{laketex packages}}
+Audits CTAN packages, checks external host tools, and installs dependencies with consent.
+\begin{verbatim}
+laketex packages document.tex --check-deps
+laketex packages document.tex --install-deps -y
+\end{verbatim}
+
+\subsection{\texttt{laketex compare}}
+Renders both Tectonic and Native outputs pixel-by-pixel, computing Mean Squared Error (MSE), PSNR, and visual parity percentage.
+\begin{verbatim}
+laketex compare document.tex --output-dir ./parity_report
+\end{verbatim}
+
+\subsection{\texttt{laketex serve}}
+Launches the embedded HTTP daemon on a specified host and port (default: \texttt{127.0.0.1:3030}).
+\begin{verbatim}
+laketex serve --port 3030
+\end{verbatim}
+
+\section{Embedded HTTP REST API Endpoints}
+
+When running \texttt{laketex serve} or passing \texttt{--with-api} alongside the GUI, the embedded daemon responds to standard JSON requests:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Method} & \textbf{Endpoint} & \textbf{Description} \\
+\midrule
+\texttt{GET} & \texttt{/health} & Server status and available compiler engines \\
+\texttt{POST} & \texttt{/api/compile} & Compiles \LaTeX\ source to base64 PDF \\
+\texttt{POST} & \texttt{/api/check} & Syntax linting with structured diagnostics \\
+\texttt{POST} & \texttt{/api/outline} & Extracts section and equation outline tree \\
+\texttt{POST} & \texttt{/api/debug} & Audits math and matrix syntax \\
+\texttt{GET} & \texttt{/api/dependencies} & Lists host tool dependencies and Python status \\
+\texttt{POST} & \texttt{/api/dependencies/install} & Installs dependency with explicit user consent \\
+\bottomrule
+\end{tabular}
+\caption{Laketex REST API endpoints.}
+\label{tab:endpoints}
+\end{table}
+
+\subsection{Example Request: \texttt{POST /api/compile}}
+\begin{verbatim}
+curl -X POST http://127.0.0.1:3030/api/compile \
+  -H "Content-Type: application/json" \
+  -d '{"source": "\\documentclass{article}\\begin{document}Hello\\end{document}", "engine": "native"}'
+\end{verbatim}
+
+\end{document}

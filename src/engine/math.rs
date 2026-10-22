@@ -279,11 +279,11 @@ impl MathRenderer {
                         if let Some(deg) = root_degree {
                             let fmt_deg = Self::formula_to_html(&deg);
                             result.push_str(&format!(
-                                "<span class=\"sqrt\"><sup>{fmt_deg}</sup><span class=\"radical\">&radic;</span><span class=\"radicand\">{fmt_radicand}</span></span>"
+                                "<span class=\"sqrt\"><sup>{fmt_deg}</sup><span class=\"radical\">√</span><span class=\"radicand\">{fmt_radicand}</span></span>"
                             ));
                         } else {
                             result.push_str(&format!(
-                                "<span class=\"sqrt\"><span class=\"radical\">&radic;</span><span class=\"radicand\">{fmt_radicand}</span></span>"
+                                "<span class=\"sqrt\"><span class=\"radical\">√</span><span class=\"radicand\">{fmt_radicand}</span></span>"
                             ));
                         }
                         continue;
@@ -370,7 +370,10 @@ impl MathRenderer {
 
     /// Converts a LaTeX math formula into semantic, publication-grade HTML
     pub fn formula_to_html(formula: &str) -> String {
-        let mut text = formula.to_string();
+        // Pre-escape mathematical relational operators to valid XML/HTML entities
+        let mut text = formula
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
 
         // 1. Convert any matrix environments to HTML tables
         while let Some((start, end, env, rows)) = Self::parse_matrix_environment(&text) {
@@ -490,7 +493,7 @@ impl MathRenderer {
             ("\\left.", ""), ("\\right.", ""),
 
             // Spacing
-            ("\\quad", "&emsp;"), ("\\qquad", "&emsp;&emsp;"), ("\\,", "&nbsp;"), ("\\;", "&nbsp;&nbsp;"), ("\\!", ""),
+            ("\\quad", "&#8195;"), ("\\qquad", "&#8195;&#8195;"), ("\\,", "&#160;"), ("\\;", "&#160;&#160;"), ("\\!", ""),
         ];
 
         for (from, to) in replacements {

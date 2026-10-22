@@ -20,7 +20,7 @@ pub mod viewer_panel;
 use crate::compiler::engine::EngineKind;
 use crate::compiler::{CompilerWorker, Diagnostic};
 use crate::document::packages::{PackageDependency, PackageManager};
-use crate::document::Document;
+use crate::document::{BuiltinDoc, BuiltinDocKind, Document};
 use crate::engine::layout::{DocumentLayout, TypesetPage};
 use crate::engine::parser::NativeLatexParser;
 use crate::ui::drawer::{Drawer, DrawerAction};
@@ -265,6 +265,42 @@ impl LakeTexApp {
             crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
         self.status_message = "New document created".to_string();
         self.trigger_compilation();
+    }
+
+    /// Loads an offline built-in documentation manual directly into the editor for viewing and editing.
+    pub fn load_builtin_doc(&mut self, kind: BuiltinDocKind) {
+        let doc_info = BuiltinDoc::get(kind);
+        self.document = Document::new(doc_info.content.to_string(), None);
+        self.canvas.reset_cache();
+        let ast = NativeLatexParser::parse(&self.document.content);
+        self.latest_pdf_bytes =
+            crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
+        self.status_message = format!("Loaded documentation: {}", doc_info.title);
+        self.drawer.status_feedback = Some((
+            format!("✓ Opened {}", doc_info.filename),
+            std::time::Instant::now(),
+        ));
+        self.trigger_compilation();
+    }
+
+    /// Exports an offline built-in documentation manual as a standalone .tex file to user's disk.
+    pub fn export_builtin_doc(&mut self, kind: BuiltinDocKind) {
+        let doc_info = BuiltinDoc::get(kind);
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(doc_info.filename)
+            .add_filter("LaTeX Document", &["tex"])
+            .save_file()
+        {
+            if let Err(e) = std::fs::write(&path, doc_info.content) {
+                self.status_message = format!("Export error: {e}");
+            } else {
+                self.status_message = format!("Exported {} to {}", doc_info.filename, path.display());
+                self.drawer.status_feedback = Some((
+                    format!("✓ Exported {}", doc_info.filename),
+                    std::time::Instant::now(),
+                ));
+            }
+        }
     }
 
     pub fn export_error_log(&mut self) {
@@ -598,6 +634,9 @@ impl eframe::App for LakeTexApp {
             if action.save_as_requested {
                 self.save_document_as();
             }
+            if let Some(kind) = action.load_builtin_doc {
+                self.load_builtin_doc(kind);
+            }
         });
 
         // 2. Bottom Status Bar
@@ -717,6 +756,12 @@ impl eframe::App for LakeTexApp {
                         }
                         SidebarAction::PromptInstallDependency(dep) => {
                             self.prompt_dependency_consent(dep);
+                        }
+                        SidebarAction::LoadBuiltinDoc(kind) => {
+                            self.load_builtin_doc(kind);
+                        }
+                        SidebarAction::ExportBuiltinDoc(kind) => {
+                            self.export_builtin_doc(kind);
                         }
                         SidebarAction::None => {}
                     }

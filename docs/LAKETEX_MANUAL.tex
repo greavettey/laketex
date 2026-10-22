@@ -1,0 +1,263 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{hyperref}
+
+\geometry{margin=1in}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    pdftitle={Laketex User Manual & Documentation},
+}
+
+\title{\textbf{Laketex: High-Performance Portable \LaTeX\ Viewer \& Editor}}
+\author{\textbf{Laketex Engineering Team} \\ Pure-Rust Systems \& Typesetting Group}
+\date{October 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Laketex is a lightweight, zero-installation, information-dense \LaTeX\ editor and live typesetting environment written entirely in safe Rust. Packaged as a single self-contained executable under 16 megabytes, it eliminates the need for multi-gigabyte distributions such as \TeX\ Live or MiK\TeX. Laketex features real-time debounced compilation, an instant pure-Rust native typesetter, Tectonic auto-CTAN integration, high-DPI dual-mode vector viewing, SyncTeX bidirectional navigation, a flexible key-value theming engine with user-customizable theme files, and a headless REST API.
+\end{abstract}
+
+\tableofcontents
+
+\vspace{1em}
+\hrule
+\vspace{1em}
+
+\section{Introduction \& Core Philosophy}
+
+Modern academic and scientific communication demands mathematical rigor, typographic elegance, and rapid editing iteration. Traditional \LaTeX\ distributions frequently require 4 to 8 gigabytes of disk space, complex package managers, and slow compilation cycles. 
+
+Laketex was engineered from the ground up to provide a portable, information-dense desktop and headless environment with zero setup:
+\begin{itemize}
+    \item \textbf{Single Portable Binary}: Ships as a standalone 15 MB executable (\texttt{laketex.exe}). No installers, background services, or registry modifications are required.
+    \item \textbf{Dual Typesetting Engines}: Includes an instant, pure-Rust native typesetter ($< 5\text{ ms}$) alongside embedded Tectonic with automated CTAN resource downloading.
+    \item \textbf{Bidirectional SyncTeX}: Click sections in the outline to jump in the editor; double-click paragraphs or equations in the preview to jump straight to the source code.
+    \item \textbf{Diagnostic Intelligence}: Contextual error logs that isolate the exact code line, infer document intent, and provide actionable resolution suggestions.
+    \item \textbf{Custom Key-Value Theming}: Full UI color customization via simple JSON or YAML files placed in a \texttt{themes/} folder.
+\end{itemize}
+
+\section{User Interface Architecture}
+
+The Laketex workspace is organized into five coordinated panels:
+\begin{enumerate}
+    \item \textbf{Top Action Toolbar}: Houses file controls (\texttt{+ New}, \texttt{Open}, \texttt{Save}), manual recompile trigger (\texttt{Ctrl+B}), live duration indicators, engine selector, zoom controls, theme selector, and panel visibility toggles.
+    \item \textbf{Navigation Sidebar (Left)}: Collapsible side panel featuring:
+    \begin{itemize}
+        \item \textbf{Outline}: Real-time hierarchy of sections, equations, and tables with click-to-jump navigation.
+        \item \textbf{Packages}: Active document packages, CTAN catalog browser, and external tool status badges.
+        \item \textbf{Documentation}: In-app access to bundled \LaTeX\ manuals with instant 1-click loading.
+        \item \textbf{Snippets}: Quick-insert symbol palettes for Greek characters and common mathematical operators.
+        \item \textbf{Metrics}: Word count, character count, and wall-clock compilation benchmarks.
+    \end{itemize}
+    \item \textbf{Code Editor Panel (Center Left)}: Monospace editing buffer with line numbers, error indicators, syntax highlighting, and auto-indentation.
+    \item \textbf{Live Document Viewer (Center Right)}: Dual-mode canvas supporting instant \textit{Native Vector View} (AST layout) and high-DPI \textit{PDF Vector View} (PDFium rasterization) with academic dark mode inversion.
+    \item \textbf{Diagnostics Console Drawer (Bottom)}: Slide-up panel displaying structured warnings, compiler output logs, render audit reports, and error export buttons.
+\end{enumerate}
+
+\section{Dual-Engine Compilation Architecture}
+
+Laketex provides two complementary compilation backends selectable from the top toolbar:
+
+\subsection{Native Pure-Rust Engine (Zero-Install, Instant)}
+The Native engine parses \LaTeX\ into an Abstract Syntax Tree (AST) using a recursive-descent parser written in 100\% safe Rust. It computes box geometry, line breaks, section numbering, and exports clean vector PDFs in under 75 milliseconds. It requires no external executables or internet connection.
+
+\subsection{Tectonic Engine (Auto-CTAN Resource Fetching)}
+When complex packages, bibliography processing, or XeTeX macro extensions are required, Laketex integrates with Tectonic. Tectonic downloads required CTAN style files dynamically into a localized cache without requiring a system \TeX\ installation.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llrr}
+\toprule
+\textbf{Engine} & \textbf{Mechanism} & \textbf{Average Build} & \textbf{External Deps} \\
+\midrule
+Native Rust & In-Process Pure Rust & $< 75\text{ ms}$ & None (Zero-Install) \\
+Tectonic & Embedded XeTeX + CTAN & $350 - 700\text{ ms}$ & Auto-downloaded \\
+pdfLaTeX & System Executable & $800 - 1500\text{ ms}$ & TeX Live / MiKTeX \\
+XeLaTeX & System Executable & $1200 - 2200\text{ ms}$ & TeX Live / MiKTeX \\
+\bottomrule
+\end{tabular}
+\caption{Compilation engine performance comparison.}
+\label{tab:engine_perf}
+\end{table}
+
+\section{Custom Theming Engine \& The \texttt{themes/} Folder}
+\label{sec:theming}
+
+Laketex features an extensible theming architecture where all colors are controlled through intuitive key-value pairs (using standard hex color codes like \texttt{\#RRGGBB} or \texttt{\#RGB}).
+
+\subsection{Built-in Themes}
+Laketex ships with five built-in themes:
+\begin{itemize}
+    \item \textbf{Dracula (JetBrains)}: Default dark theme matching JetBrains' official Dracula palette (editor background \texttt{\#282a36}, panel surface \texttt{\#21222c}, purple accent \texttt{\#bd93f9}, and comment foreground \texttt{\#6272a4}).
+    \item \textbf{Academic Dark}: High-contrast slate theme designed for extended nighttime reading.
+    \item \textbf{Slate Minimal}: Low-saturation neutral dark theme.
+    \item \textbf{Nord Frost}: Arctic blue-gray palette inspired by the Nord color system.
+    \item \textbf{Paper White}: Clean high-contrast daylight theme for daytime writing.
+\end{itemize}
+
+\subsection{Creating Custom Themes}
+You can create your own custom themes without recompiling the application. Laketex automatically scans and loads any \texttt{.json}, \texttt{.yaml}, or \texttt{.yml} theme files located in:
+\begin{enumerate}
+    \item A \texttt{themes/} folder placed alongside \texttt{laketex.exe}.
+    \item A \texttt{themes/} folder in the current document directory.
+    \item Directly alongside the executable as a loose file.
+\end{enumerate}
+
+\subsection{Supported Color Keys}
+The theming parser maps simple key names to UI components:
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Key Name} & \textbf{Aliases} & \textbf{UI Target} \\
+\midrule
+\texttt{background} & \texttt{bg}, \texttt{window\_fill} & Main window and background fill \\
+\texttt{panel\_background} & \texttt{panel\_bg}, \texttt{surface} & Sidebar and console drawer surface \\
+\texttt{editor\_background} & \texttt{editor\_bg}, \texttt{code\_bg} & Code editor editing area background \\
+\texttt{text} & \texttt{foreground}, \texttt{fg} & Primary readable text \\
+\texttt{text\_muted} & \texttt{comment}, \texttt{muted} & Comments and secondary labels \\
+\texttt{selection} & \texttt{selection\_bg} & Active editor text selection \\
+\texttt{accent} & \texttt{primary}, \texttt{cursor} & Active caret, primary buttons, links \\
+\texttt{border} & \texttt{stroke}, \texttt{separator} & Panel separator borders \\
+\texttt{error} & \texttt{err} & Diagnostic error indicators \\
+\texttt{warning} & \texttt{warn} & Diagnostic warning indicators \\
+\texttt{success} & \texttt{ok} & Successful compilation badges \\
+\bottomrule
+\end{tabular}
+\caption{Supported color keys in custom theme files.}
+\label{tab:color_keys}
+\end{table}
+
+\subsection{Custom Theme Examples}
+
+\subsubsection{Example 1: JSON Theme (\texttt{themes/monokai\_pro.json})}
+\begin{verbatim}
+{
+  "name": "Monokai Pro",
+  "dark_mode": true,
+  "colors": {
+    "background": "#2d2a2e",
+    "panel_background": "#221f22",
+    "editor_background": "#19181a",
+    "text": "#fcfcfa",
+    "text_muted": "#727072",
+    "accent": "#ffd866",
+    "selection": "#403e41",
+    "border": "#363437",
+    "error": "#ff6188",
+    "warning": "#fc9867",
+    "success": "#a9dc76"
+  }
+}
+\end{verbatim}
+
+\subsubsection{Example 2: YAML Theme (\texttt{themes/solarized\_dark.yaml})}
+\begin{verbatim}
+name: Solarized Dark
+dark_mode: true
+colors:
+  background: "#002b36"
+  panel_background: "#073642"
+  editor_background: "#00212b"
+  text: "#839496"
+  text_muted: "#586e75"
+  accent: "#268bd2"
+  selection: "#073642"
+  border: "#094352"
+  error: "#dc322f"
+  warning: "#cb4b16"
+  success: "#859900"
+\end{verbatim}
+
+\section{Package Management \& Dependency Consent}
+
+Laketex automatically inspects preambles for declared packages (\texttt{\textbackslash usepackage\{...\}}). When standard CTAN packages are detected, they are provisioned seamlessly.
+
+\subsection{External Host Tool Dependencies}
+Certain packages (such as \texttt{minted} for source code highlighting or \texttt{pythontex} for Python execution) depend on external system tools such as Python's \texttt{pygments} library (\texttt{pygmentize}).
+
+Laketex includes an automated, privacy-respecting dependency workflow:
+\begin{itemize}
+    \item \textbf{Prerequisite Probing}: Laketex checks whether Python and \texttt{pip} are available on your system \texttt{PATH}.
+    \item \textbf{Explicit User Consent}: Laketex will \textbf{never} execute package installations without your permission. A prompt modal appears asking if you wish to run \texttt{python -m pip install pygments}.
+    \item \textbf{Safe Fallback Draft Mode}: If you decline or do not have Python installed, Laketex automatically applies draft mode (\texttt{\textbackslash PassOptionsToPackage\{draft\}\{minted\}}), allowing your document to compile cleanly without crashing.
+\end{itemize}
+
+\section{Mathematical \& Matrix Typographic Parity}
+
+Laketex delivers visual parity with Overleaf and standard \TeX\ engines for complex mathematical notation:
+\begin{equation}
+\label{eq:matrix_demo}
+\mathbf{T}_{2\text{D}} = \begin{pmatrix}
+\cos\theta & -\sin\theta & x_0 \\
+\sin\theta & \cos\theta & y_0 \\
+0 & 0 & 1
+\end{pmatrix}
+\end{equation}
+
+All standard AMS matrix environments are supported natively and in PDF preview:
+\begin{itemize}
+    \item Parentheses: \texttt{pmatrix} (Equation~\ref{eq:matrix_demo})
+    \item Square Brackets: \texttt{bmatrix}
+    \item Determinants: \texttt{vmatrix} and \texttt{Vmatrix}
+    \item Curly Braces: \texttt{Bmatrix}
+    \item Stacked Fractions: \texttt{\textbackslash frac\{numerator\}\{denominator\}}
+\end{itemize}
+
+\section{Headless Automation \& CLI Commands}
+
+Laketex includes a headless mode for continuous integration, scripting, and remote rendering:
+\begin{itemize}
+    \item \texttt{laketex compile document.tex -o output.pdf --engine native}
+    \item \texttt{laketex check document.tex --export-log error\_report.md}
+    \item \texttt{laketex packages document.tex --check-deps}
+    \item \texttt{laketex packages document.tex --install-deps -y}
+    \item \texttt{laketex compare document.tex --output-dir parity\_report}
+    \item \texttt{laketex debug document.tex -f json}
+    \item \texttt{laketex serve --port 3030}
+\end{itemize}
+
+\section{Keyboard Shortcuts Reference}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Shortcut} & \textbf{Command Action} \\
+\midrule
+\texttt{Ctrl + B} & Force Recompile Document \\
+\texttt{Ctrl + S} & Save Document to Disk \\
+\texttt{Ctrl + O} & Open \LaTeX\ File Dialog \\
+\texttt{Ctrl + N} & Create New Document \\
+\texttt{Ctrl + =} / \texttt{Ctrl + +} & Zoom In Preview \\
+\texttt{Ctrl + -} & Zoom Out Preview \\
+\texttt{Double-Click Preview} & SyncTeX: Jump to Source Code Line \\
+\texttt{Click Section in Outline} & SyncTeX: Jump to Heading in Editor \\
+\bottomrule
+\end{tabular}
+\caption{Laketex keyboard shortcuts.}
+\label{tab:shortcuts}
+\end{table}
+
+\section{In-App Documentation Access}
+
+You can access and load any of the official Laketex documentation manuals directly as \LaTeX\ files inside this application:
+\begin{enumerate}
+    \item Open the \textbf{Left Sidebar} and select the \textbf{Docs} tab.
+    \item Or click the \textbf{📖 Documentation} menu in the top toolbar.
+    \item Choose any guide (\textit{Welcome Manual}, \textit{Theming Guide}, \textit{API Reference}, or \textit{Architecture}) to load and compile it live!
+\end{enumerate}
+
+\end{document}

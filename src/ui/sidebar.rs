@@ -8,6 +8,7 @@
 
 use crate::document::outline::OutlineItem;
 use crate::document::packages::{PackageDependency, PackageInfo, PackageManager};
+use crate::document::{BuiltinDoc, BuiltinDocKind};
 use egui::{Color32, RichText, ScrollArea, Ui};
 
 /// Active view tab in the sidebar panel.
@@ -19,6 +20,8 @@ pub enum SidebarTab {
     Packages,
     /// Quick-insert math and symbol snippets
     Snippets,
+    /// Bundled in-app LaTeX documentation manuals
+    Docs,
     /// Word count, character count, and timing metrics
     Metrics,
 }
@@ -52,6 +55,10 @@ pub enum SidebarAction {
     InsertSnippet(String),
     /// Prompt user consent to install missing external tool dependency
     PromptInstallDependency(PackageDependency),
+    /// Load a built-in documentation manual into the active editor
+    LoadBuiltinDoc(BuiltinDocKind),
+    /// Export a built-in documentation manual to disk
+    ExportBuiltinDoc(BuiltinDocKind),
 }
 
 impl Sidebar {
@@ -78,6 +85,7 @@ impl Sidebar {
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Outline, "Outline");
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Packages, "Packages");
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Snippets, "Math");
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Docs, "📖 Docs");
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Metrics, "Info");
             });
 
@@ -288,6 +296,50 @@ impl Sidebar {
                                 if ui.button(format!("+ Insert {label}")).clicked() {
                                     action = SidebarAction::InsertSnippet(snippet.to_string());
                                 }
+                            }
+                        }
+                        SidebarTab::Docs => {
+                            ui.label(RichText::new("📖 Built-in LaTeX Manuals").strong().size(13.5));
+                            ui.label(
+                                RichText::new("Full documentation library is embedded inside the Laketex binary. Open directly in editor or export as standalone .tex files.")
+                                    .small()
+                                    .color(Color32::from_gray(160)),
+                            );
+                            ui.add_space(8.0);
+
+                            for doc in BuiltinDoc::all() {
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(doc.title)
+                                                .strong()
+                                                .color(Color32::from_rgb(97, 175, 239)),
+                                        );
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(Color32::from_gray(140), format!("📄 {}", doc.filename));
+                                        ui.colored_label(
+                                            Color32::from_rgb(152, 195, 121),
+                                            format!("{} lines", doc.content.lines().count()),
+                                        );
+                                    });
+                                    ui.add_space(3.0);
+                                    ui.label(
+                                        RichText::new(doc.description)
+                                            .size(11.5)
+                                            .color(Color32::from_gray(190)),
+                                    );
+                                    ui.add_space(5.0);
+                                    ui.horizontal(|ui| {
+                                        if ui.button("📖 Open in Editor").clicked() {
+                                            action = SidebarAction::LoadBuiltinDoc(doc.kind);
+                                        }
+                                        if ui.button("💾 Export .tex").clicked() {
+                                            action = SidebarAction::ExportBuiltinDoc(doc.kind);
+                                        }
+                                    });
+                                });
+                                ui.add_space(6.0);
                             }
                         }
                         SidebarTab::Metrics => {

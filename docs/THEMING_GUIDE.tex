@@ -1,0 +1,124 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{hyperref}
+
+\geometry{margin=1in}
+
+\title{\textbf{Laketex Theming Engine \& Custom Themes Guide}}
+\author{Laketex Design System Team}
+\date{October 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This guide provides complete technical specifications for the Laketex key-value theming engine. It explains how to author custom JSON and YAML theme files, configure color palettes, place them into the \texttt{themes/} folder alongside the executable, and activate them inside the user interface.
+\end{abstract}
+
+\section{Introduction to the Theming Architecture}
+
+Laketex decouples user interface aesthetics from code compilation through a flexible, key-value configuration system ([`ThemeConfig`]). All interface colors—including panels, buttons, editor text, selection highlights, carets, borders, and compiler status indicators—are parameterized through standard hexadecimal strings.
+
+\section{Theme File Discovery \& The \texttt{themes/} Folder}
+
+When Laketex starts, it automatically traverses three discovery locations for theme files:
+\begin{enumerate}
+    \item \textbf{Application \texttt{themes/} Directory}: \texttt{./themes/} located alongside \texttt{laketex.exe}.
+    \item \textbf{Working Directory \texttt{themes/} Directory}: \texttt{./themes/} in the current document root.
+    \item \textbf{Root Executable Directory}: Loose \texttt{.json}, \texttt{.yaml}, or \texttt{.yml} files placed directly alongside \texttt{laketex.exe}.
+\end{enumerate}
+
+Any valid theme file discovered in these paths is dynamically loaded into memory and populated in the top toolbar's theme selector dropdown.
+
+\section{Key-Value Color Specification}
+
+Theme files support simple key-value definitions. You do not need to specify every key; unspecified keys gracefully fall back to sensible defaults.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Token Key} & \textbf{Accepted Synonyms} & \textbf{Component Styled} \\
+\midrule
+\texttt{background} & \texttt{bg}, \texttt{window\_fill} & Outer application window \\
+\texttt{panel\_background} & \texttt{panel\_bg}, \texttt{surface} & Sidebar, status bar, and console drawer \\
+\texttt{editor\_background} & \texttt{editor\_bg}, \texttt{code\_bg} & Central code editor text buffer \\
+\texttt{text} & \texttt{foreground}, \texttt{fg} & Primary readable text and labels \\
+\texttt{text\_muted} & \texttt{comment}, \texttt{muted} & Comments, line numbers, subtle hints \\
+\texttt{selection} & \texttt{selection\_bg} & Active editor highlight rectangle \\
+\texttt{accent} & \texttt{primary}, \texttt{cursor} & Editor caret, active links, primary buttons \\
+\texttt{border} & \texttt{stroke}, \texttt{separator} & Panel dividers and group frames \\
+\texttt{error} & \texttt{err} & Diagnostic error indicators (\#ff5555) \\
+\texttt{warning} & \texttt{warn} & Diagnostic warning indicators (\#ffb86c) \\
+\texttt{success} & \texttt{ok} & Compile success indicators (\#50fa7b) \\
+\bottomrule
+\end{tabular}
+\caption{Complete reference of recognized theme color keys.}
+\label{tab:theme_keys}
+\end{table}
+
+\section{Format Specifications \& Examples}
+
+Themes can be authored in either standard JSON or clean YAML syntax.
+
+\subsection{JSON Theme Template (\texttt{themes/my\_theme.json})}
+\begin{verbatim}
+{
+  "name": "Nordic Slate",
+  "dark_mode": true,
+  "colors": {
+    "background": "#242933",
+    "panel_background": "#2e3440",
+    "editor_background": "#1e222a",
+    "text": "#eceff4",
+    "text_muted": "#7b88a1",
+    "accent": "#88c0d0",
+    "selection": "#434c5e",
+    "border": "#3b4252",
+    "error": "#bf616a",
+    "warning": "#ebcb8b",
+    "success": "#a3be8c"
+  }
+}
+\end{verbatim}
+
+\subsection{YAML Theme Template (\texttt{themes/my\_theme.yaml})}
+\begin{verbatim}
+name: Sunset Warmth
+dark_mode: true
+colors:
+  background: "#1f1b24"
+  panel_background: "#26212d"
+  editor_background: "#18151c"
+  text: "#f5e6c8"
+  text_muted: "#9e8b7d"
+  accent: "#ff9e64"
+  selection: "#443850"
+  border: "#3a3044"
+  error: "#f7768e"
+  warning: "#e0af68"
+  success: "#9ece6a"
+\end{verbatim}
+
+\section{Built-in JetBrains Dracula Theme}
+
+For users accustomed to IntelliJ, PyCharm, or CLion, Laketex includes an official **Dracula (JetBrains)** theme built directly into the program:
+\begin{itemize}
+    \item Editor Canvas: \texttt{\#282a36}
+    \item Window Panels: \texttt{\#21222c}
+    \item Selection Background: \texttt{\#44475a}
+    \item Purple Accent: \texttt{\#bd93f9}
+    \item Foreground Text: \texttt{\#f8f8f2}
+    \item Comments: \texttt{\#6272a4}
+\end{itemize}
+
+\section{Testing \& Hot-Reloading Themes}
+
+When you place a new theme file into the \texttt{themes/} directory, you can immediately select it from the top toolbar dropdown. If you modify a custom theme file on disk, simply re-select it in the dropdown to instantly refresh the active interface.
+
+\end{document}

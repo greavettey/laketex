@@ -9,6 +9,7 @@
 //! - Sidebar and console drawer toggles
 
 use crate::compiler::engine::EngineKind;
+use crate::document::{BuiltinDoc, BuiltinDocKind};
 use crate::ui::theme::ThemeConfig;
 use egui::{vec2, Color32, RichText, Ui};
 
@@ -25,6 +26,8 @@ pub struct ToolbarAction {
     pub save_requested: bool,
     /// True if the user clicked Save File As
     pub save_as_requested: bool,
+    /// User requested to load a built-in documentation manual into the editor
+    pub load_builtin_doc: Option<BuiltinDocKind>,
 }
 
 /// The main application toolbar widget.
@@ -73,6 +76,29 @@ impl Toolbar {
             if ui.button("Save").clicked() {
                 action.save_requested = true;
             }
+
+            // Built-in LaTeX Documentation Menu
+            ui.menu_button("📖 Docs", |ui| {
+                ui.set_min_width(240.0);
+                ui.label(RichText::new("LaTeX Documentation Library").strong());
+                ui.label(
+                    RichText::new("Compilable .tex manuals bundled offline in the binary")
+                        .small()
+                        .color(Color32::from_gray(160)),
+                );
+                ui.separator();
+                for doc in BuiltinDoc::all() {
+                    let text = format!("📄 {}", doc.title);
+                    if ui
+                        .button(text)
+                        .on_hover_text(format!("{}\n\nFile: {}", doc.description, doc.filename))
+                        .clicked()
+                    {
+                        action.load_builtin_doc = Some(doc.kind);
+                        ui.close_menu();
+                    }
+                }
+            });
 
             ui.separator();
 

@@ -103,8 +103,10 @@ impl VisualParityComparator {
             return Err(LakeTexError::PdfRender("PDFium engine is unavailable for rendering".to_string()));
         }
 
-        let (img_tectonic, _t_pages) = renderer.render_page_to_color_image(&tectonic_pdf, page_index, target_width, false)?;
-        let (img_native, _n_pages) = renderer.render_page_to_color_image(&native_pdf, page_index, target_width, false)?;
+        let (img_tectonic, _t_pages) = renderer.render_page_to_color_image(&tectonic_pdf, page_index, target_width, false)
+            .map_err(|e| LakeTexError::PdfRender(format!("Tectonic PDF render error: {e}")))?;
+        let (img_native, _n_pages) = renderer.render_page_to_color_image(&native_pdf, page_index, target_width, false)
+            .map_err(|e| LakeTexError::PdfRender(format!("Native PDF render error: {e}")))?;
 
         // 4. Align dimensions for comparative pixel analysis
         let w = img_tectonic.width().min(img_native.width());

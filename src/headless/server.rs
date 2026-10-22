@@ -340,6 +340,69 @@ impl HeadlessServer {
                                 ),
                             }
                         }
+                        ("GET", "/api/docs") => {
+                            let docs = crate::document::BuiltinDoc::all();
+                            let items: Vec<serde_json::Value> = docs
+                                .iter()
+                                .map(|d| {
+                                    serde_json::json!({
+                                        "kind": format!("{:?}", d.kind),
+                                        "title": d.title,
+                                        "filename": d.filename,
+                                        "description": d.description,
+                                        "lines": d.content.lines().count(),
+                                    })
+                                })
+                                .collect();
+                            (200, serde_json::json!({ "docs": items }).to_string())
+                        }
+                        ("POST", "/api/docs") => {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+
+                            #[derive(Deserialize)]
+                            struct DocReq {
+                                doc: String,
+                            }
+
+                            match serde_json::from_str::<DocReq>(&body_str) {
+                                Ok(req) => {
+                                    let docs = crate::document::BuiltinDoc::all();
+                                    let found = docs.iter().find(|d| {
+                                        let k = format!("{:?}", d.kind).to_lowercase();
+                                        k == req.doc.to_lowercase()
+                                            || d.filename.to_lowercase() == req.doc.to_lowercase()
+                                            || d.filename.to_lowercase().starts_with(&req.doc.to_lowercase())
+                                    });
+
+                                    if let Some(d) = found {
+                                        (
+                                            200,
+                                            serde_json::json!({
+                                                "kind": format!("{:?}", d.kind),
+                                                "title": d.title,
+                                                "filename": d.filename,
+                                                "description": d.description,
+                                                "content": d.content
+                                            })
+                                            .to_string(),
+                                        )
+                                    } else {
+                                        (
+                                            404,
+                                            serde_json::json!({
+                                                "error": format!("Document '{}' not found", req.doc)
+                                            })
+                                            .to_string(),
+                                        )
+                                    }
+                                }
+                                Err(e) => (
+                                    400,
+                                    serde_json::json!({ "error": format!("Invalid JSON: {e}") }).to_string(),
+                                ),
+                            }
+                        }
                         _ => (
                             404,
                             serde_json::json!({ "error": "Endpoint not found" }).to_string(),

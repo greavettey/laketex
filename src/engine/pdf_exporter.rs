@@ -13,6 +13,15 @@ use std::collections::BTreeMap;
 pub struct NativePdfExporter;
 
 impl NativePdfExporter {
+    /// XML/HTML entity escaping for reliable PDFium / printpdf rendering
+    pub fn escape_xml(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    }
+
     /// Converts a [`LatexAst`] into formatted HTML with embedded CSS styling for print rendering.
     pub fn ast_to_html(ast: &LatexAst) -> String {
         let mut html = String::new();
@@ -69,20 +78,20 @@ impl NativePdfExporter {
         html.push_str("</style></head><body>");
 
         if ast.blocks.is_empty() {
-            html.push_str("<p>&nbsp;</p>");
+            html.push_str("<p>&#160;</p>");
         }
 
         for block in &ast.blocks {
             match block {
                 DocumentBlock::TitleBlock { .. } => {
                     if let Some(title) = &ast.metadata.title {
-                        html.push_str(&format!("<h1 class=\"title\">{title}</h1>"));
+                        html.push_str(&format!("<h1 class=\"title\">{}</h1>", Self::escape_xml(title)));
                     }
                     if let Some(author) = &ast.metadata.author {
-                        html.push_str(&format!("<p class=\"author\">{author}</p>"));
+                        html.push_str(&format!("<p class=\"author\">{}</p>", Self::escape_xml(author)));
                     }
                     if let Some(date) = &ast.metadata.date {
-                        html.push_str(&format!("<p class=\"date\">{date}</p>"));
+                        html.push_str(&format!("<p class=\"date\">{}</p>", Self::escape_xml(date)));
                     }
                     html.push_str("<hr class=\"divider\">");
                 }
@@ -99,7 +108,7 @@ impl NativePdfExporter {
                     } else {
                         format!("{number} {title}")
                     };
-                    html.push_str(&format!("<{tag} class=\"{cls}\">{header_text}</{tag}>"));
+                    html.push_str(&format!("<{tag} class=\"{cls}\">{}</{tag}>", Self::escape_xml(&header_text)));
                 }
                 DocumentBlock::Paragraph { spans, .. } => {
                     html.push_str("<p>");
@@ -138,7 +147,7 @@ impl NativePdfExporter {
                     let table_class = if *has_booktabs { "latex-table booktabs" } else { "latex-table" };
                     html.push_str(&format!("<table class=\"{table_class}\"><thead><tr>"));
                     for h in headers {
-                        html.push_str(&format!("<th>{h}</th>"));
+                        html.push_str(&format!("<th>{}</th>", Self::escape_xml(h)));
                     }
                     html.push_str("</tr></thead><tbody>");
                     for row in rows {
@@ -152,26 +161,23 @@ impl NativePdfExporter {
                     }
                     html.push_str("</tbody></table>");
                     if let Some(cap) = caption {
-                        html.push_str(&format!("<p style=\"text-align:center;font-size:9.5pt;margin-top:4px;\"><em>{cap}</em></p>"));
+                        html.push_str(&format!("<p style=\"text-align:center;font-size:9.5pt;margin-top:4px;\"><em>{}</em></p>", Self::escape_xml(cap)));
                     }
                 }
                 DocumentBlock::Figure { caption, number, image_path, .. } => {
                     let label = image_path.as_deref().unwrap_or("Graphic Object");
                     html.push_str("<div class=\"figure-container\">");
-                    html.push_str(&format!("<div class=\"figure-box\">📷 [{label}]</div>"));
+                    html.push_str(&format!("<div class=\"figure-box\">📷 [{}]</div>", Self::escape_xml(label)));
                     if let Some(cap) = caption {
-                        html.push_str(&format!("<p class=\"caption\"><em>Figure {number}: {cap}</em></p>"));
+                        html.push_str(&format!("<p class=\"caption\"><em>Figure {number}: {}</em></p>", Self::escape_xml(cap)));
                     }
                     html.push_str("</div>");
                 }
                 DocumentBlock::CodeBlock { language, code, .. } => {
-                    let escaped = code
-                        .replace('&', "&amp;")
-                        .replace('<', "&lt;")
-                        .replace('>', "&gt;");
+                    let escaped = Self::escape_xml(code);
                     html.push_str("<div class=\"code-container\">");
                     if !language.is_empty() {
-                        html.push_str(&format!("<div class=\"code-lang\">{language}</div>"));
+                        html.push_str(&format!("<div class=\"code-lang\">{}</div>", Self::escape_xml(language)));
                     }
                     html.push_str(&format!("<pre class=\"code-block\"><code>{escaped}</code></pre>"));
                     html.push_str("</div>");
@@ -190,19 +196,19 @@ impl NativePdfExporter {
         let mut out = String::new();
         for span in spans {
             match span {
-                InlineSpan::Text(t) => out.push_str(t),
-                InlineSpan::Bold(t) => out.push_str(&format!("<strong>{t}</strong>")),
-                InlineSpan::Italic(t) => out.push_str(&format!("<em>{t}</em>")),
-                InlineSpan::Code(t) => out.push_str(&format!("<span class=\"code\">{t}</span>")),
+                InlineSpan::Text(t) => out.push_str(&Self::escape_xml(t)),
+                InlineSpan::Bold(t) => out.push_str(&format!("<strong>{}</strong>", Self::escape_xml(t))),
+                InlineSpan::Italic(t) => out.push_str(&format!("<em>{}</em>", Self::escape_xml(t))),
+                InlineSpan::Code(t) => out.push_str(&format!("<span class=\"code\">{}</span>", Self::escape_xml(t))),
                 InlineSpan::Math(m) => {
                     let html_math = MathRenderer::formula_to_html(m);
                     out.push_str(&format!("<span class=\"math\">{html_math}</span>"));
                 }
                 InlineSpan::Colored(c, t) => {
-                    out.push_str(&format!("<span style=\"color:rgb({},{},{})\">{t}</span>", c.r(), c.g(), c.b()));
+                    out.push_str(&format!("<span style=\"color:rgb({},{},{})\">{}</span>", c.r(), c.g(), c.b(), Self::escape_xml(t)));
                 }
-                InlineSpan::Url(u) => out.push_str(&format!("<a href=\"{u}\">{u}</a>")),
-                InlineSpan::Ref(r) | InlineSpan::Cite(r) => out.push_str(&format!("<span>{r}</span>")),
+                InlineSpan::Url(u) => out.push_str(&format!("<a href=\"{}\">{}</a>", Self::escape_xml(u), Self::escape_xml(u))),
+                InlineSpan::Ref(r) | InlineSpan::Cite(r) => out.push_str(&format!("<span>{}</span>", Self::escape_xml(r))),
             }
         }
         out

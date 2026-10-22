@@ -4,99 +4,19 @@
 //! cached structural section outline ([`outline::OutlineItem`]), detected CTAN packages
 //! ([`packages::PackageInfo`]), dirty state tracking, and file I/O operations.
 
+pub mod builtin_docs;
 pub mod lexer;
 pub mod outline;
 pub mod packages;
 
+pub use builtin_docs::{BuiltinDoc, BuiltinDocKind};
 use outline::{OutlineItem, OutlineParser};
 use packages::{PackageInfo, PackageManager};
 use std::path::{Path, PathBuf};
 
 /// Default modern LaTeX document template initialized when creating a new file.
-pub const DEFAULT_DOCUMENT_TEMPLATE: &str = r#"\documentclass[11pt,a4paper]{article}
-
-% --- Essential Packages (Auto-imported by Laketex) ---
-\usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{graphicx}
-\usepackage{booktabs}
-\usepackage{xcolor}
-\usepackage{hyperref}
-
-\hypersetup{
-    colorlinks=true,
-    linkcolor=blue,
-    filecolor=magenta,      
-    urlcolor=cyan,
-    pdftitle={Laketex Document},
-    pdfpagemode=FullScreen,
-}
-
-\title{\textbf{Laketex}: High-Performance Modern \LaTeX}
-\author{Research \& Engineering Group}
-\date{\today}
-
-\begin{document}
-
-\maketitle
-
-\begin{abstract}
-Laketex is a lightweight, zero-installation, information-dense \LaTeX\ editor and live viewer written in Rust. It features real-time debounced compilation, automatic CTAN package provisioning, crisp high-DPI PDF previewing, and a headless API.
-\end{abstract}
-
-\section{Introduction}
-Modern scientific communication requires precision, aesthetic elegance, and rapid iteration. Laketex replaces gigabyte-heavy distributions with a sub-second, memory-efficient single binary.
-
-\subsection{Key Capabilities}
-\begin{itemize}
-    \item \textbf{Sub-second Live Recompile}: Experience live updates as you write.
-    \item \textbf{Automatic CTAN Fetch}: No more missing package errors.
-    \item \textbf{Information Density}: Code editor, outline navigator, package inspector, and live PDF canvas in one unified view.
-    \item \textbf{Headless REST API}: Fully scriptable via HTTP endpoints and CLI commands.
-\end{itemize}
-
-\section{Mathematical Formulations}
-Laketex renders standard AMS mathematics with vector fidelity:
-\begin{equation}
-\label{eq:fourier}
-\hat{f}(\xi) = \int_{-\infty}^{\infty} f(x)\,e^{-2\pi i x \xi}\,dx
-\end{equation}
-
-In Equation~\ref{eq:fourier}, the continuous Fourier transform maps time-domain signals into the frequency domain.
-
-\subsection{Matrix Computations}
-Matrices and tensor expressions compile seamlessly:
-\begin{equation}
-\mathbf{H} = \begin{pmatrix}
-\frac{\partial^2 f}{\partial x_1^2} & \cdots & \frac{\partial^2 f}{\partial x_1 \partial x_n} \\
-\vdots & \ddots & \vdots \\
-\frac{\partial^2 f}{\partial x_n \partial x_1} & \cdots & \frac{\partial^2 f}{\partial x_n^2}
-\end{pmatrix}
-\end{equation}
-
-\section{Publication Tables}
-Clean tabular structures using standard \texttt{booktabs}:
-\begin{table}[htbp]
-\centering
-\begin{tabular}{llrr}
-\toprule
-\textbf{Tool} & \textbf{Language} & \textbf{Binary Size} & \textbf{Startup (ms)} \\
-\midrule
-TeXstudio & C++/Qt & 180 MB & 3,200 \\
-VS Code + LaTeX & Electron/JS & 520 MB & 4,500 \\
-Overleaf & Cloud/Node & Web App & 1,800 \\
-\textbf{Laketex} & \textbf{Rust} & \textbf{16 MB} & \textbf{75} \\
-\bottomrule
-\end{tabular}
-\caption{Comparative performance metrics.}
-\label{tab:benchmarks}
-\end{table}
-
-\section{Conclusion}
-Laketex brings the modern Rust tooling ethos to \LaTeX\ typesetting.
-
-\end{document}
-"#;
+/// Points to the comprehensive Laketex Welcome Manual and User Guide.
+pub const DEFAULT_DOCUMENT_TEMPLATE: &str = builtin_docs::LAKETEX_MANUAL;
 
 /// In-memory representation of an open LaTeX document.
 pub struct Document {
