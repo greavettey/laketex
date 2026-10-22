@@ -46,6 +46,10 @@ pub enum LakeTexError {
     #[error("Document parse error: {0}")]
     Parse(String),
 
+    /// Package external tool dependency or permission error
+    #[error("Dependency error: {0}")]
+    Dependency(String),
+
     /// Unspecified general error
     #[error("General error: {0}")]
     General(String),

@@ -431,3 +431,98 @@ fn test_compiler_engine_cleans_stale_pdf_and_handles_syntax_errors() {
         assert!(res.pdf_bytes.is_none(), "Failed compile result must not return pdf_bytes");
     }
 }
+
+#[test]
+fn test_package_dependency_detection_and_consent() {
+    use laketex::document::packages::{DependencyKind, PackageManager};
+
+    let source = r#"\documentclass{article}
+\usepackage{minted}
+\usepackage{amsmath}
+\begin{document}
+Hello
+\end{document}"#;
+
+    // 1. Dependency detection
+    let deps = PackageManager::detect_dependencies(source);
+    assert_eq!(deps.len(), 1, "Should detect 1 external dependency for 'minted'");
+    let minted_dep = &deps[0];
+    assert_eq!(minted_dep.latex_package, "minted");
+    assert_eq!(minted_dep.name, "Pygments");
+    assert_eq!(minted_dep.binary_name, "pygmentize");
+    assert_eq!(minted_dep.pip_package, Some("pygments".to_string()));
+    assert_eq!(minted_dep.kind, DependencyKind::PythonPackage);
+
+    // 2. Python environment probing
+    let py_env = PackageManager::check_python_environment();
+    // On systems with Python, python_available is true
+    if py_env.python_available {
+        assert!(py_env.python_version.is_some());
+        assert!(py_env.python_path.is_some());
+    }
+
+    // 3. User consent requirement enforcement
+    // Attempting installation without consent MUST fail with an error
+    let no_consent_result = PackageManager::install_dependency("pygments", false);
+    assert!(
+        no_consent_result.is_err(),
+        "Installation without explicit user consent must fail"
+    );
+    let err_str = no_consent_result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("consent was not granted"),
+        "Error message must specify consent was not granted: {err_str}"
+    );
+}
+
+#[test]
+fn test_headless_api_dependency_endpoints() {
+    use laketex::headless::server::HeadlessServer;
+    use std::sync::atomic::Ordering;
+
+    let test_port = 3037;
+    let running = HeadlessServer::start_background("127.0.0.1", test_port)
+        .expect("Server failed to start");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // 1. GET /api/dependencies
+    let get_url = format!("http://127.0.0.1:{test_port}/api/dependencies");
+    let resp = ureq::get(&get_url)
+        .call()
+        .expect("GET /api/dependencies request should succeed");
+    assert_eq!(resp.status(), 200);
+    let resp_str = resp.into_string().unwrap();
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+    assert!(resp_json["dependencies"].is_array());
+    let deps_array = resp_json["dependencies"].as_array().unwrap();
+    assert!(deps_array.iter().any(|d| d["latex_package"] == "minted"));
+
+    // 2. POST /api/dependencies/check
+    let check_url = format!("http://127.0.0.1:{test_port}/api/dependencies/check");
+    let source_json = serde_json::json!({
+        "source": "\\documentclass{article}\n\\usepackage{minted}\n\\begin{document}Code\\end{document}"
+    });
+    let check_resp = ureq::post(&check_url)
+        .send_json(source_json)
+        .expect("POST /api/dependencies/check request should succeed");
+    assert_eq!(check_resp.status(), 200);
+    let check_json: serde_json::Value = serde_json::from_str(&check_resp.into_string().unwrap()).unwrap();
+    assert_eq!(check_json["dependencies"].as_array().unwrap().len(), 1);
+
+    // 3. POST /api/dependencies/install with consent: false -> must be 403 Forbidden
+    let install_url = format!("http://127.0.0.1:{test_port}/api/dependencies/install");
+    let forbidden_payload = serde_json::json!({
+        "package": "pygments",
+        "consent": false
+    });
+    let forbidden_res = ureq::post(&install_url).send_json(forbidden_payload);
+    assert!(forbidden_res.is_err(), "Should return error status code for consent: false");
+    let err = forbidden_res.unwrap_err();
+    match err {
+        ureq::Error::Status(code, _) => assert_eq!(code, 403, "Must return HTTP 403 Forbidden without consent"),
+        _ => panic!("Expected HTTP 403 status error"),
+    }
+
+    // Shut down test server
+    running.store(false, Ordering::SeqCst);
+}

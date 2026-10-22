@@ -7,7 +7,7 @@
 //! - Live word count, character count, and compile speed metrics
 
 use crate::document::outline::OutlineItem;
-use crate::document::packages::{PackageInfo, PackageManager};
+use crate::document::packages::{PackageDependency, PackageInfo, PackageManager};
 use egui::{Color32, RichText, ScrollArea, Ui};
 
 /// Active view tab in the sidebar panel.
@@ -50,6 +50,8 @@ pub enum SidebarAction {
     InsertPackage(String),
     /// Insert snippet string at current editor caret
     InsertSnippet(String),
+    /// Prompt user consent to install missing external tool dependency
+    PromptInstallDependency(PackageDependency),
 }
 
 impl Sidebar {
@@ -118,18 +120,78 @@ impl Sidebar {
                         }
                         SidebarTab::Packages => {
                             ui.label(RichText::new("Imported in Document:").strong());
+                            let known_deps = PackageManager::get_known_dependencies();
+
                             if packages.is_empty() {
                                 ui.colored_label(Color32::from_gray(140), "No \\usepackage detected.");
                             } else {
                                 for pkg in packages {
+                                    let matching_dep = known_deps.iter().find(|d| d.latex_package == pkg.name);
+
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(&pkg.name).strong().color(Color32::from_rgb(97, 175, 239)));
                                             ui.colored_label(Color32::from_gray(120), format!(":{}", pkg.line));
+                                            if let Some(dep) = matching_dep {
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if dep.installed {
+                                                        ui.colored_label(Color32::from_rgb(152, 195, 121), format!("✓ {}", dep.binary_name));
+                                                    } else {
+                                                        ui.colored_label(Color32::from_rgb(229, 192, 123), format!("⚠️ Missing {}", dep.binary_name));
+                                                    }
+                                                });
+                                            }
                                         });
                                         ui.label(RichText::new(&pkg.description).size(11.0).color(Color32::from_gray(170)));
+
+                                        if let Some(dep) = matching_dep {
+                                            if !dep.installed {
+                                                ui.horizontal(|ui| {
+                                                    ui.colored_label(Color32::from_rgb(229, 192, 123), format!("Requires '{}' (Python)", dep.name));
+                                                    if ui.button(format!("📦 Install {}...", dep.name)).clicked() {
+                                                        action = SidebarAction::PromptInstallDependency(dep.clone());
+                                                    }
+                                                });
+                                            }
+                                        }
                                     });
                                 }
+                            }
+
+                            ui.separator();
+                            ui.label(RichText::new("External Tool Dependencies:").strong());
+                            let py_env = PackageManager::check_python_environment();
+                            if py_env.python_available {
+                                let ver = py_env.python_version.as_deref().unwrap_or("Ready");
+                                ui.colored_label(
+                                    Color32::from_rgb(152, 195, 121),
+                                    format!("✓ Python {} (pip ready)", ver),
+                                );
+                            } else {
+                                ui.colored_label(
+                                    Color32::from_rgb(224, 108, 117),
+                                    "✗ Python not found on system",
+                                );
+                            }
+
+                            for dep in &known_deps {
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(&dep.name).strong());
+                                        ui.label(RichText::new(format!("for '{}' ({})", dep.latex_package, dep.binary_name)).size(10.5).color(Color32::from_gray(150)));
+                                    });
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if dep.installed {
+                                            ui.colored_label(Color32::from_rgb(152, 195, 121), "✓ Installed");
+                                        } else if py_env.python_available {
+                                            if ui.button("Install...").clicked() {
+                                                action = SidebarAction::PromptInstallDependency(dep.clone());
+                                            }
+                                        } else {
+                                            ui.colored_label(Color32::from_gray(140), "No Python");
+                                        }
+                                    });
+                                });
                             }
 
                             ui.separator();
@@ -145,17 +207,24 @@ impl Sidebar {
                                 }
 
                                 let is_imported = packages.iter().any(|p| p.name == *pkg_name);
+                                let has_ext_dep = known_deps.iter().find(|d| d.latex_package == *pkg_name);
 
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.label(RichText::new(*pkg_name).strong());
-                                        ui.label(RichText::new(format!("[{cat}] {desc}")).size(11.0).color(Color32::from_gray(150)));
+                                        let note = if has_ext_dep.is_some() { " [Requires Python Tool]" } else { "" };
+                                        ui.label(RichText::new(format!("[{cat}] {desc}{note}")).size(11.0).color(Color32::from_gray(150)));
                                     });
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if is_imported {
                                             ui.colored_label(Color32::from_rgb(152, 195, 121), "✓ Added");
                                         } else if ui.button("+ Add").clicked() {
                                             action = SidebarAction::InsertPackage(pkg_name.to_string());
+                                            if let Some(dep) = has_ext_dep {
+                                                if !dep.installed {
+                                                    action = SidebarAction::PromptInstallDependency(dep.clone());
+                                                }
+                                            }
                                         }
                                     });
                                 });

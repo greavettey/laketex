@@ -290,7 +290,7 @@ impl CompilerEngine {
 
         // If pygmentize is not available and source uses minted, pre-inject draft mode
         // to avoid unrecoverable XeTeX crashes when pygmentize cannot be executed
-        let has_pygmentize = Self::has_executable("pygmentize");
+        let has_pygmentize = crate::document::packages::PackageManager::is_binary_available("pygmentize");
         let pre_draft_minted = !has_pygmentize
             && source.contains("minted")
             && !source.contains("\\PassOptionsToPackage{draft}{minted}");
@@ -334,10 +334,14 @@ impl CompilerEngine {
 
         // If compilation failed specifically due to minted / shell-escape / pygments, attempt draft fallback
         let combined_log = format!("{stdout}\n{stderr}");
-        if (!output.status.success() || !pdf_file_path.exists())
-            && combined_log.contains("Package minted Error")
-            && !source.contains("\\PassOptionsToPackage{draft}{minted}")
-        {
+        let is_minted_failure = (!output.status.success()
+            || !pdf_file_path.exists()
+            || combined_log.contains("failed to execute the shell-escape command")
+            || combined_log.contains("Package minted Error"))
+            && source.contains("minted")
+            && !source.contains("\\PassOptionsToPackage{draft}{minted}");
+
+        if is_minted_failure {
             let fallback_source = format!("\\PassOptionsToPackage{{draft}}{{minted}}\n{source}");
             let _ = std::fs::write(&tex_file_path, &fallback_source);
             let _ = std::fs::remove_file(&pdf_file_path);

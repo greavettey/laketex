@@ -19,7 +19,7 @@ pub mod viewer_panel;
 
 use crate::compiler::engine::EngineKind;
 use crate::compiler::{CompilerWorker, Diagnostic};
-use crate::document::packages::PackageManager;
+use crate::document::packages::{PackageDependency, PackageManager};
 use crate::document::Document;
 use crate::engine::layout::{DocumentLayout, TypesetPage};
 use crate::engine::parser::NativeLatexParser;
@@ -31,9 +31,38 @@ use crate::ui::toolbar::Toolbar;
 use crate::ui::viewer_panel::{ViewMode, ViewerAction, ViewerPanel};
 use crate::viewer::canvas::PdfCanvas;
 use crate::viewer::PdfRenderer;
-use eframe::egui::{self, vec2, Color32, Key, Modifiers, TopBottomPanel};
+use eframe::egui::{self, vec2, Color32, Key, Modifiers, RichText, TopBottomPanel};
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
+
+/// Holds state for user-consented external tool dependency installation.
+pub struct DependencyPromptState {
+    pub show_modal: bool,
+    pub pending_dependency: Option<PackageDependency>,
+    pub is_installing: bool,
+    pub install_status: Option<String>,
+    pub user_declined: bool,
+    pub auto_prompted_once: bool,
+    pub tx: Sender<Result<String, String>>,
+    pub rx: Receiver<Result<String, String>>,
+}
+
+impl Default for DependencyPromptState {
+    fn default() -> Self {
+        let (tx, rx) = channel();
+        Self {
+            show_modal: false,
+            pending_dependency: None,
+            is_installing: false,
+            install_status: None,
+            user_declined: false,
+            auto_prompted_once: false,
+            tx,
+            rx,
+        }
+    }
+}
 
 pub struct LakeTexApp {
     pub document: Document,
@@ -62,6 +91,7 @@ pub struct LakeTexApp {
 
     pub api_port: u16,
     pub status_message: String,
+    pub dependency_prompt: DependencyPromptState,
 }
 
 impl LakeTexApp {
@@ -123,7 +153,14 @@ impl LakeTexApp {
             last_duration_ms: None,
             api_port,
             status_message: "Ready".to_string(),
+            dependency_prompt: DependencyPromptState::default(),
         }
+    }
+
+    pub fn prompt_dependency_consent(&mut self, dep: PackageDependency) {
+        self.dependency_prompt.pending_dependency = Some(dep);
+        self.dependency_prompt.show_modal = true;
+        self.dependency_prompt.install_status = None;
     }
 
     pub fn recompute_native_layout(&mut self) {
@@ -298,6 +335,158 @@ impl LakeTexApp {
             }
         }
     }
+
+    /// Renders the user consent modal dialog when a LaTeX package requires external tool installation.
+    pub fn render_dependency_prompt(&mut self, ctx: &egui::Context) {
+        if !self.dependency_prompt.show_modal {
+            return;
+        }
+
+        let Some(dep) = self.dependency_prompt.pending_dependency.clone() else {
+            return;
+        };
+
+        let mut close_modal = false;
+        let mut trigger_install = false;
+        let mut user_declined = false;
+
+        egui::Window::new("📦 Package Dependency Consent")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .fixed_size(vec2(500.0, 300.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("📦").size(24.0));
+                    ui.vertical(|ui| {
+                        ui.heading(format!("Install External Dependency: {}", dep.name));
+                        ui.label(
+                            RichText::new(format!(
+                                "Required by LaTeX package: \\usepackage{{{}}}",
+                                dep.latex_package
+                            ))
+                            .size(11.5)
+                            .color(Color32::from_gray(160)),
+                        );
+                    });
+                });
+                ui.separator();
+
+                ui.label(RichText::new(&dep.description).color(Color32::from_gray(180)));
+                ui.add_space(4.0);
+
+                ui.group(|ui| {
+                    ui.label(RichText::new("System Prerequisite Check:").strong());
+                    let py_env = PackageManager::check_python_environment();
+                    if py_env.python_available {
+                        let ver = py_env.python_version.as_deref().unwrap_or("Ready");
+                        let path = py_env.python_path.as_deref().unwrap_or("python");
+                        ui.colored_label(
+                            Color32::from_rgb(152, 195, 121),
+                            format!("✓ Python {ver} ({path})"),
+                        );
+                        if py_env.pip_available {
+                            ui.colored_label(
+                                Color32::from_rgb(152, 195, 121),
+                                "✓ pip package manager available",
+                            );
+                        } else {
+                            ui.colored_label(
+                                Color32::from_rgb(224, 108, 117),
+                                "✗ pip package manager missing",
+                            );
+                        }
+                    } else {
+                        ui.colored_label(
+                            Color32::from_rgb(224, 108, 117),
+                            "✗ Python not found on system PATH",
+                        );
+                    }
+
+                    if dep.installed {
+                        ui.colored_label(
+                            Color32::from_rgb(152, 195, 121),
+                            format!("✓ '{}' is currently installed", dep.binary_name),
+                        );
+                    } else {
+                        ui.colored_label(
+                            Color32::from_rgb(229, 192, 123),
+                            format!("✗ '{}' is not installed", dep.binary_name),
+                        );
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.label("Would you like Laketex to install this package using pip?");
+                ui.colored_label(
+                    Color32::from_rgb(97, 175, 239),
+                    format!("Command: {}", dep.install_command),
+                );
+
+                if let Some(status) = &self.dependency_prompt.install_status {
+                    ui.add_space(4.0);
+                    ui.colored_label(Color32::from_rgb(242, 201, 76), status);
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    let py_env = PackageManager::check_python_environment();
+                    let can_install = py_env.python_available
+                        && py_env.pip_available
+                        && !self.dependency_prompt.is_installing;
+
+                    if self.dependency_prompt.is_installing {
+                        ui.spinner();
+                        ui.label("Installing package via pip, please wait...");
+                    } else {
+                        if ui
+                            .add_enabled(
+                                can_install,
+                                egui::Button::new(
+                                    RichText::new("✓ Install (Grant Consent)").strong(),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            trigger_install = true;
+                        }
+
+                        if ui.button("Use Draft Mode (Skip)").clicked() {
+                            close_modal = true;
+                        }
+
+                        if ui.button("Don't Ask Again").clicked() {
+                            user_declined = true;
+                            close_modal = true;
+                        }
+                    }
+                });
+            });
+
+        if close_modal {
+            self.dependency_prompt.show_modal = false;
+        }
+        if user_declined {
+            self.dependency_prompt.user_declined = true;
+        }
+        if trigger_install {
+            self.dependency_prompt.is_installing = true;
+            self.dependency_prompt.install_status =
+                Some("Installing via pip in background...".to_string());
+            let tx = self.dependency_prompt.tx.clone();
+            let pip_pkg = dep
+                .pip_package
+                .clone()
+                .unwrap_or_else(|| dep.name.to_lowercase());
+            std::thread::spawn(move || {
+                let res =
+                    PackageManager::install_dependency(&pip_pkg, true).map_err(|e| e.to_string());
+                let _ = tx.send(res);
+            });
+        }
+    }
 }
 
 impl eframe::App for LakeTexApp {
@@ -325,6 +514,35 @@ impl eframe::App for LakeTexApp {
                     self.status_message = format!("Compile failed: {err_msg}");
                     self.raw_stderr = err_msg;
                 }
+            }
+        }
+
+        // Check for completed external tool dependency installation
+        if let Ok(res) = self.dependency_prompt.rx.try_recv() {
+            self.dependency_prompt.is_installing = false;
+            match res {
+                Ok(msg) => {
+                    self.status_message = "Dependency installed successfully!".to_string();
+                    self.dependency_prompt.install_status = Some(msg);
+                    self.dependency_prompt.show_modal = false;
+                    self.trigger_compilation();
+                }
+                Err(err) => {
+                    self.status_message = "Dependency install failed".to_string();
+                    self.dependency_prompt.install_status = Some(format!("Error: {err}"));
+                }
+            }
+        }
+
+        // Auto-prompt user consent for missing package dependencies if needed
+        if !self.dependency_prompt.auto_prompted_once
+            && !self.dependency_prompt.user_declined
+            && !self.dependency_prompt.is_installing
+        {
+            let missing = PackageManager::detect_dependencies(&self.document.content);
+            if let Some(first_missing) = missing.into_iter().find(|d| !d.installed) {
+                self.dependency_prompt.auto_prompted_once = true;
+                self.prompt_dependency_consent(first_missing);
             }
         }
 
@@ -451,6 +669,9 @@ impl eframe::App for LakeTexApp {
                         DrawerAction::ExportAuditReport => {
                             self.export_audit_report();
                         }
+                        DrawerAction::PromptInstallDependency(dep) => {
+                            self.prompt_dependency_consent(dep);
+                        }
                         DrawerAction::None => {}
                     }
                 });
@@ -493,6 +714,9 @@ impl eframe::App for LakeTexApp {
                             if self.auto_compile {
                                 self.trigger_compilation();
                             }
+                        }
+                        SidebarAction::PromptInstallDependency(dep) => {
+                            self.prompt_dependency_consent(dep);
                         }
                         SidebarAction::None => {}
                     }
@@ -560,8 +784,11 @@ impl eframe::App for LakeTexApp {
             });
         });
 
-        // Request rapid repaints while tasks are compiling or active
-        if self.compiler.is_compiling() {
+        // 6. External Dependency Installation Consent Modal
+        self.render_dependency_prompt(ctx);
+
+        // Request rapid repaints while tasks are compiling or installing
+        if self.compiler.is_compiling() || self.dependency_prompt.is_installing {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
     }

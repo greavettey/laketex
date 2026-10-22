@@ -56,6 +56,15 @@ pub struct SourceApiRequest {
     pub source: String,
 }
 
+/// Request payload for `/api/dependencies/install`.
+#[derive(Debug, Deserialize)]
+pub struct InstallDependencyApiRequest {
+    /// Pip or system dependency package name (e.g. "pygments")
+    pub package: String,
+    /// Explicit user consent flag
+    pub consent: bool,
+}
+
 /// Embedded HTTP server handle.
 #[allow(dead_code)]
 pub struct HeadlessServer {
@@ -246,6 +255,84 @@ impl HeadlessServer {
                                         pdf_bytes,
                                     );
                                     (200, report.to_json())
+                                }
+                                Err(e) => (
+                                    400,
+                                    serde_json::json!({ "error": format!("Invalid JSON: {e}") }).to_string(),
+                                ),
+                            }
+                        }
+                        ("GET", "/api/dependencies") => {
+                            let py_env = PackageManager::check_python_environment();
+                            let deps = PackageManager::get_known_dependencies();
+                            (
+                                200,
+                                serde_json::json!({
+                                    "python_environment": py_env,
+                                    "dependencies": deps,
+                                })
+                                .to_string(),
+                            )
+                        }
+                        ("POST", "/api/dependencies/check") => {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+
+                            match serde_json::from_str::<SourceApiRequest>(&body_str) {
+                                Ok(req) => {
+                                    let py_env = PackageManager::check_python_environment();
+                                    let deps = PackageManager::detect_dependencies(&req.source);
+                                    (
+                                        200,
+                                        serde_json::json!({
+                                            "python_environment": py_env,
+                                            "dependencies": deps,
+                                        })
+                                        .to_string(),
+                                    )
+                                }
+                                Err(e) => (
+                                    400,
+                                    serde_json::json!({ "error": format!("Invalid JSON: {e}") }).to_string(),
+                                ),
+                            }
+                        }
+                        ("POST", "/api/dependencies/install") => {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+
+                            match serde_json::from_str::<InstallDependencyApiRequest>(&body_str) {
+                                Ok(req) => {
+                                    if !req.consent {
+                                        (
+                                            403,
+                                            serde_json::json!({
+                                                "success": false,
+                                                "error": "Explicit user consent is required to install dependencies (set 'consent': true)."
+                                            })
+                                            .to_string(),
+                                        )
+                                    } else {
+                                        match PackageManager::install_dependency(&req.package, true) {
+                                            Ok(msg) => (
+                                                200,
+                                                serde_json::json!({
+                                                    "success": true,
+                                                    "package": req.package,
+                                                    "output": msg
+                                                })
+                                                .to_string(),
+                                            ),
+                                            Err(e) => (
+                                                500,
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": e.to_string()
+                                                })
+                                                .to_string(),
+                                            ),
+                                        }
+                                    }
                                 }
                                 Err(e) => (
                                     400,

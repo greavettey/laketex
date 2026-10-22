@@ -57,6 +57,10 @@ pub enum Commands {
         #[arg(short, long, default_value = "native")]
         engine: String,
 
+        /// Automatically install missing external dependencies with consent before compiling
+        #[arg(long)]
+        install_deps: bool,
+
         /// Export a contextual error report file (.md or .json) if errors occur
         #[arg(long)]
         export_log: Option<PathBuf>,
@@ -82,10 +86,22 @@ pub enum Commands {
         input: PathBuf,
     },
 
-    /// Inspect imported packages and CTAN availability
+    /// Inspect imported packages, check external tool dependencies, and install missing dependencies with consent
     Packages {
         /// Input .tex file
         input: PathBuf,
+
+        /// Check external tool dependencies (e.g. Pygments for minted)
+        #[arg(long)]
+        check_deps: bool,
+
+        /// Install missing external tool dependencies via pip/system package manager
+        #[arg(long)]
+        install_deps: bool,
+
+        /// Automatically grant consent for package installation without interactive prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Visually compare Tectonic rendering to the Native Pure-Rust engine and compute parity metrics
@@ -136,9 +152,24 @@ impl CliArgs {
                 input,
                 output,
                 engine,
+                install_deps,
                 export_log,
             } => {
                 let source = std::fs::read_to_string(&input)?;
+
+                if install_deps {
+                    let missing = PackageManager::detect_dependencies(&source);
+                    for dep in missing.into_iter().filter(|d| !d.installed) {
+                        let pkg = dep.pip_package.as_deref().unwrap_or(&dep.name);
+                        println!("Installing missing dependency '{}' via pip...", pkg);
+                        if let Err(e) = PackageManager::install_dependency(pkg, true) {
+                            eprintln!("Warning: Failed to install dependency {}: {}", pkg, e);
+                        } else {
+                            println!("✓ Installed '{}'", pkg);
+                        }
+                    }
+                }
+
                 let engine_kind = match engine.to_lowercase().as_str() {
                     "tectonic" => EngineKind::Tectonic,
                     "pdflatex" => EngineKind::PdfLatex,
@@ -246,10 +277,110 @@ impl CliArgs {
                 let items = OutlineParser::parse(&source);
                 println!("{}", serde_json::to_string_pretty(&items)?);
             }
-            Commands::Packages { input } => {
+            Commands::Packages {
+                input,
+                check_deps,
+                install_deps,
+                yes,
+            } => {
                 let source = std::fs::read_to_string(&input)?;
                 let packages = PackageManager::detect_packages(&source);
-                println!("{}", serde_json::to_string_pretty(&packages)?);
+                let dependencies = PackageManager::detect_dependencies(&source);
+
+                if !check_deps && !install_deps {
+                    println!("{}", serde_json::to_string_pretty(&packages)?);
+                    return Ok(());
+                }
+
+                println!("======================================================================");
+                println!("📦 LAKETEX PACKAGE DEPENDENCY AUDIT: {}", input.display());
+                println!("======================================================================");
+
+                let py_env = PackageManager::check_python_environment();
+                println!("System Environment:");
+                if py_env.python_available {
+                    let ver = py_env.python_version.as_deref().unwrap_or("unknown");
+                    let path = py_env.python_path.as_deref().unwrap_or("python");
+                    println!("  ✓ Python: {} ({})", ver, path);
+                    if py_env.pip_available {
+                        println!("  ✓ pip: Available");
+                    } else {
+                        println!("  ✗ pip: Missing");
+                    }
+                } else {
+                    println!("  ✗ Python: Not detected on system PATH");
+                }
+                println!("----------------------------------------------------------------------");
+
+                if dependencies.is_empty() {
+                    println!("✓ None of the declared packages require external host tools.");
+                } else {
+                    println!("Detected External Tool Dependencies ({}):", dependencies.len());
+                    for (i, dep) in dependencies.iter().enumerate() {
+                        let status_label = if dep.installed {
+                            format!("✓ Installed ({})", dep.binary_path.as_deref().unwrap_or(&dep.binary_name))
+                        } else {
+                            "✗ MISSING".to_string()
+                        };
+                        println!(
+                            "[{}] Package '{}' -> Dependency '{}' (binary: '{}')",
+                            i + 1,
+                            dep.latex_package,
+                            dep.name,
+                            dep.binary_name
+                        );
+                        println!("    Status:          {}", status_label);
+                        println!("    Description:     {}", dep.description);
+                        println!("    Install Command: {}", dep.install_command);
+                    }
+                }
+
+                if install_deps {
+                    println!("----------------------------------------------------------------------");
+                    let missing_deps: Vec<_> = dependencies
+                        .into_iter()
+                        .filter(|d| !d.installed)
+                        .collect();
+                    if missing_deps.is_empty() {
+                        println!("✓ All required external tool dependencies are already installed!");
+                    } else {
+                        for dep in missing_deps {
+                            let pkg_to_install = dep
+                                .pip_package
+                                .as_deref()
+                                .unwrap_or(&dep.name);
+                            let mut consented = yes;
+
+                            if !consented {
+                                print!(
+                                    "\nLaTeX package '{}' requires '{}'. Do you consent to installing it via '{}'? [y/N]: ",
+                                    dep.latex_package, dep.name, dep.install_command
+                                );
+                                std::io::Write::flush(&mut std::io::stdout())?;
+                                let mut input_line = String::new();
+                                std::io::stdin().read_line(&mut input_line)?;
+                                let trimmed = input_line.trim().to_lowercase();
+                                if trimmed == "y" || trimmed == "yes" {
+                                    consented = true;
+                                }
+                            }
+
+                            if consented {
+                                println!("Installing '{}' via pip...", pkg_to_install);
+                                match PackageManager::install_dependency(pkg_to_install, true) {
+                                    Ok(msg) => println!("✓ {}", msg.trim()),
+                                    Err(e) => {
+                                        eprintln!("✗ Failed to install {}: {}", pkg_to_install, e)
+                                    }
+                                }
+                            } else {
+                                println!("Installation skipped: user consent was not granted.");
+                            }
+                        }
+                    }
+                }
+
+                println!("======================================================================");
             }
             Commands::Compare {
                 input,

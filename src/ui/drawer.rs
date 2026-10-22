@@ -8,6 +8,7 @@
 
 use crate::compiler::error_report::ErrorReport;
 use crate::compiler::{Diagnostic, DiagnosticSeverity, EngineKind};
+use crate::document::packages::{PackageDependency, PackageManager};
 use crate::engine::render_debugger::RenderDebugger;
 use egui::{Color32, RichText, ScrollArea, Ui};
 
@@ -51,6 +52,8 @@ pub enum DrawerAction {
     ExportErrorReport,
     /// Open file dialog to export render audit report
     ExportAuditReport,
+    /// Prompt user consent to install missing external tool dependency
+    PromptInstallDependency(PackageDependency),
 }
 
 impl Drawer {
@@ -223,6 +226,23 @@ impl Drawer {
                                         ui.colored_label(Color32::from_gray(130), details);
                                     });
                                 }
+
+                                if diag.message.contains("minted") || diag.message.contains("pygmentize") || diag.message.contains("Pygments") {
+                                    let known = PackageManager::get_known_dependencies();
+                                    if let Some(dep) = known.iter().find(|d| d.latex_package == "minted") {
+                                        if !dep.installed {
+                                            ui.indent("quick_fix_indent", |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.colored_label(Color32::from_rgb(229, 192, 123), "💡 Quick Fix:");
+                                                    if ui.button("📦 Install Pygments via pip (Consent Required)...").clicked() {
+                                                        action = DrawerAction::PromptInstallDependency(dep.clone());
+                                                    }
+                                                });
+                                            });
+                                        }
+                                    }
+                                }
+
                                 ui.separator();
                             }
                         }
