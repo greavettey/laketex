@@ -239,7 +239,39 @@ impl ErrorReport {
     fn categorize_and_suggest(message: &str) -> (String, String) {
         let msg = message.to_lowercase();
 
-        if msg.contains("minted") || msg.contains("shell-escape") || msg.contains("pygmentize") {
+        if msg.contains("pgfkeys") || msg.contains("pgfplots") || msg.contains("/tikz/") {
+            if msg.contains("linewidth") {
+                (
+                    "TikZ / Pgfplots Key Typo ('linewidth')".to_string(),
+                    "In TikZ and pgfplots, line thickness must be specified as 'line width=<dimen>' (with a space), e.g. 'line width=1pt', NOT 'linewidth=...'. Alternatively, use predefined thickness keywords: 'thin', 'semithick', 'thick', 'very thick', or 'ultra thick'.".to_string(),
+                )
+            } else if msg.contains("i do not know the key") {
+                (
+                    "Unknown TikZ / Pgfkeys Option".to_string(),
+                    "The key passed to TikZ/pgfplots is unrecognized. Check for typos or missing spaces. If using advanced plot features (such as fill patterns, custom marks, or decorations), ensure the required TikZ library is loaded in the preamble using '\\usetikzlibrary{...}'.".to_string(),
+                )
+            } else {
+                (
+                    "TikZ / Pgfplots Graphics Error".to_string(),
+                    "Review pgfplots / TikZ syntax. Verify coordinate lists, axis options, and domain bounds. Ensure '\\usepackage{pgfplots}' is loaded and '\\pgfplotsset{compat=1.18}' is declared in the preamble.".to_string(),
+                )
+            }
+        } else if (msg.contains("reference") || msg.contains("ref `")) && (msg.contains("undefined") || msg.contains("multiply defined")) {
+            (
+                "Undefined Cross-Reference".to_string(),
+                "The label referenced by '\\ref{...}' or '\\pageref{...}' was not found in the document auxiliary table. Ensure a matching '\\label{...}' is defined. LaTeX cross-references resolve on a second compilation pass once .aux tables are finalized.".to_string(),
+            )
+        } else if msg.contains("fancyhdr") && msg.contains("headheight") {
+            (
+                "Header Height Layout Warning (fancyhdr)".to_string(),
+                "The page header requires more vertical clearance. Add '\\setlength{\\headheight}{14pt}' to your preamble to eliminate fancyhdr underfull header warnings.".to_string(),
+            )
+        } else if msg.contains("token not allowed in a pdf string") {
+            (
+                "PDF Bookmark Warning (hyperref)".to_string(),
+                "Math mode symbols or formatting macros were used inside a section heading. Hyperref cannot embed raw math into plain-text PDF bookmarks. Wrap the math with '\\texorpdfstring{$math$}{plain text fallback}' (e.g., '\\section{Gain \\texorpdfstring{$A_v$}{Av}}').".to_string(),
+            )
+        } else if msg.contains("minted") || msg.contains("shell-escape") || msg.contains("pygmentize") {
             (
                 "Shell Escape / Minted Package Dependency".to_string(),
                 "The 'minted' package delegates code syntax highlighting to Python's Pygments library via shell escape. Laketex automatically enables '-Z shell-escape' for Tectonic. If Pygments is not installed, install it with 'pip install pygments', or use '\\usepackage[draft]{minted}' to compile in draft mode without external Python, or use Laketex's Native engine which renders syntax-highlighted code blocks natively.".to_string(),

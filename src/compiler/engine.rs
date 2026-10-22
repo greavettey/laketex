@@ -310,6 +310,8 @@ impl CompilerEngine {
             EngineKind::Tectonic => {
                 cmd.arg("-Z")
                     .arg("shell-escape")
+                    .arg("-Z")
+                    .arg("continue-on-errors")
                     .arg("--outdir")
                     .arg(run_dir)
                     .arg(&tex_file_path);
@@ -353,6 +355,8 @@ impl CompilerEngine {
                     retry_cmd
                         .arg("-Z")
                         .arg("shell-escape")
+                        .arg("-Z")
+                        .arg("continue-on-errors")
                         .arg("--outdir")
                         .arg(run_dir)
                         .arg(&tex_file_path);
@@ -413,7 +417,47 @@ impl CompilerEngine {
             }
         }
 
-        let combined_log = format!("{stdout}\n{stderr}");
+        let mut stdout = stdout;
+        let mut stderr = stderr;
+        let mut combined_log = format!("{stdout}\n{stderr}");
+
+        // If cross-references or labels are unresolved and a draft/initial output was generated, run pass 2
+        let needs_rerun = (combined_log.contains("Rerun to get cross-references right")
+            || combined_log.contains("Rerun to get /PageLabels entry")
+            || combined_log.contains("undefined on input line"))
+            && pdf_file_path.exists();
+
+        if needs_rerun {
+            let mut pass2_cmd = Command::new(&engine_path);
+            pass2_cmd.current_dir(run_dir);
+            match kind {
+                EngineKind::Tectonic => {
+                    pass2_cmd
+                        .arg("-Z")
+                        .arg("shell-escape")
+                        .arg("-Z")
+                        .arg("continue-on-errors")
+                        .arg("--outdir")
+                        .arg(run_dir)
+                        .arg(&tex_file_path);
+                }
+                EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
+                    pass2_cmd
+                        .arg("-interaction=nonstopmode")
+                        .arg("-shell-escape")
+                        .arg("-output-directory")
+                        .arg(run_dir)
+                        .arg(&tex_file_path);
+                }
+                _ => {}
+            }
+            if let Ok(pass2_out) = pass2_cmd.output() {
+                stdout = String::from_utf8_lossy(&pass2_out.stdout).to_string();
+                stderr = String::from_utf8_lossy(&pass2_out.stderr).to_string();
+                combined_log = format!("{stdout}\n{stderr}");
+            }
+        }
+
         let mut diagnostics = DiagnosticParser::parse(&combined_log);
 
         let raw_pdf = if pdf_file_path.exists() {

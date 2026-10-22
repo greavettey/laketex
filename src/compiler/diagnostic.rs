@@ -78,7 +78,7 @@ impl DiagnosticParser {
 
                 // Look ahead for "l.<number>"
                 let mut j = i + 1;
-                while j < lines.len() && j < i + 6 {
+                while j < lines.len() && j < i + 20 {
                     let next_line = lines[j].trim();
                     if next_line.starts_with('!')
                         || next_line.contains("LaTeX Warning:")
@@ -123,6 +123,16 @@ impl DiagnosticParser {
 
             // Tectonic error: "error: ..."
             if let Some(msg) = line.strip_prefix("error: ") {
+                let trimmed_msg = msg.trim();
+                // Filter out generic Tectonic wrapper messages that duplicate underlying TeX errors
+                if trimmed_msg.starts_with("something bad happened inside XeTeX")
+                    || trimmed_msg.starts_with("the XeTeX engine had an unrecoverable error")
+                    || trimmed_msg.contains("halted on potentially-recoverable error")
+                {
+                    i += 1;
+                    continue;
+                }
+
                 let mut err_line = None;
                 let mut err_file = None;
                 let mut clean_msg = msg.to_string();

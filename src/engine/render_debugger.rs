@@ -230,10 +230,13 @@ impl RenderDebugger {
         // 3. Audit LaTeX Commands in Plain Text
         Self::audit_bare_commands_outside_math(&lines, &mut issues);
 
-        // 4. Audit Native AST Layout
+        // 4. Audit TikZ & Pgfplots Options
+        Self::audit_tikz_pgfplots(&lines, &mut issues);
+
+        // 5. Audit Native AST Layout
         Self::audit_ast_layout(source, &mut issues);
 
-        // 5. Audit Generated PDF Preview
+        // 6. Audit Generated PDF Preview
         let pdf_status = Self::audit_pdf_preview(pdf_bytes, &mut issues);
 
         // Compute counts
@@ -641,6 +644,33 @@ impl RenderDebugger {
         }
     }
 
+    /// Audits TikZ and pgfplots syntax for common option typos and formatting bugs
+    fn audit_tikz_pgfplots(lines: &[&str], issues: &mut Vec<RenderDebugItem>) {
+        for (line_idx, line) in lines.iter().enumerate() {
+            let line_num = line_idx + 1;
+            let trimmed = line.trim();
+
+            if trimmed.starts_with('%') {
+                continue;
+            }
+
+            // Check for 'linewidth=' typo in options (e.g. \addplot[..., linewidth=1pt], \draw[..., linewidth=...])
+            if (trimmed.contains("\\addplot") || trimmed.contains("\\draw") || trimmed.contains("\\path") || trimmed.contains("\\node"))
+                && trimmed.contains("linewidth=")
+            {
+                issues.push(RenderDebugItem {
+                    line: line_num,
+                    command: "linewidth=".to_string(),
+                    category: "TikZ / Pgfplots Option Typo".to_string(),
+                    severity: RenderIssueSeverity::Error,
+                    issue: "TikZ and pgfplots reject 'linewidth=<dimen>' because 'linewidth' is a LaTeX length macro, not a recognized pgfkeys option. This causes XeTeX and Tectonic to halt with 'Package pgfkeys Error: I do not know the key /tikz/linewidth'.".to_string(),
+                    snippet: trimmed.to_string(),
+                    suggested_fix: "Replace 'linewidth=...' with 'line width=...' (e.g. 'line width=1pt'), or use standard styles such as 'thick', 'thin', 'semithick', or 'very thick'.".to_string(),
+                });
+            }
+        }
+    }
+
     /// Checks if a LaTeX command appears with word boundary isolation (not as prefix of a longer command)
     fn contains_isolated_latex_command(text: &str, cmd: &str) -> bool {
         let mut search_from = 0;
@@ -831,5 +861,27 @@ A = \begin{pmatrix}
             .filter(|i| i.severity == RenderIssueSeverity::Error)
             .collect();
         assert_eq!(fatal_issues.len(), 0);
+    }
+
+    #[test]
+    fn test_audit_detects_tikz_linewidth_typo() {
+        let tex = r#"
+\documentclass{article}
+\usepackage{pgfplots}
+\begin{document}
+\begin{tikzpicture}
+\begin{axis}
+\addplot[red, dashed, domain=200:1000000, linewidth=1pt] {35.52};
+\end{axis}
+\end{tikzpicture}
+\end{document}
+"#;
+        let report = RenderDebugger::scan(tex, "tikz_test.tex", None);
+        let typo = report.issues.iter().find(|i| i.category == "TikZ / Pgfplots Option Typo");
+        assert!(typo.is_some(), "Should detect TikZ linewidth= typo");
+        let item = typo.unwrap();
+        assert_eq!(item.command, "linewidth=");
+        assert_eq!(item.severity, RenderIssueSeverity::Error);
+        assert!(item.suggested_fix.contains("line width=1pt"));
     }
 }
