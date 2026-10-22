@@ -16,6 +16,8 @@ use egui::{Color32, RichText, ScrollArea, Ui};
 pub enum SidebarTab {
     /// Document section hierarchy
     Outline,
+    /// Project files and working directory explorer
+    Files,
     /// Detected CTAN packages and package library
     Packages,
     /// Quick-insert math and symbol snippets
@@ -59,6 +61,8 @@ pub enum SidebarAction {
     LoadBuiltinDoc(BuiltinDocKind),
     /// Export a built-in documentation manual to disk
     ExportBuiltinDoc(BuiltinDocKind),
+    /// Action emitted from project file manager
+    Project(crate::ui::project_manager::ProjectAction),
 }
 
 impl Sidebar {
@@ -76,6 +80,8 @@ impl Sidebar {
         char_count: usize,
         line_count: usize,
         compile_duration_ms: Option<u128>,
+        project_manager: &mut crate::ui::project_manager::ProjectManager,
+        active_file: Option<&std::path::Path>,
     ) -> SidebarAction {
         let mut action = SidebarAction::None;
 
@@ -83,6 +89,7 @@ impl Sidebar {
             // Tab switcher
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Outline, "Outline");
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Files, "📁 Files");
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Packages, "Packages");
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Snippets, "Math");
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Docs, "📖 Docs");
@@ -124,6 +131,12 @@ impl Sidebar {
                                         );
                                     });
                                 }
+                            }
+                        }
+                        SidebarTab::Files => {
+                            let act = project_manager.show_sidebar(ui, active_file);
+                            if !matches!(act, crate::ui::project_manager::ProjectAction::None) {
+                                action = SidebarAction::Project(act);
                             }
                         }
                         SidebarTab::Packages => {

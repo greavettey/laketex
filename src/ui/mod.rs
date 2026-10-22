@@ -12,6 +12,7 @@
 
 pub mod drawer;
 pub mod editor_panel;
+pub mod project_manager;
 pub mod sidebar;
 pub mod theme;
 pub mod toolbar;
@@ -25,6 +26,7 @@ use crate::engine::layout::{DocumentLayout, TypesetPage};
 use crate::engine::parser::NativeLatexParser;
 use crate::ui::drawer::{Drawer, DrawerAction};
 use crate::ui::editor_panel::EditorPanel;
+use crate::ui::project_manager::{ProjectAction, ProjectManager};
 use crate::ui::sidebar::{Sidebar, SidebarAction};
 use crate::ui::theme::ThemeConfig;
 use crate::ui::toolbar::Toolbar;
@@ -32,7 +34,7 @@ use crate::ui::viewer_panel::{ViewMode, ViewerAction, ViewerPanel};
 use crate::viewer::canvas::PdfCanvas;
 use crate::viewer::PdfRenderer;
 use eframe::egui::{self, vec2, Color32, Key, Modifiers, RichText, TopBottomPanel};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -78,6 +80,7 @@ pub struct LakeTexApp {
     pub editor_panel: EditorPanel,
     pub sidebar: Sidebar,
     pub drawer: Drawer,
+    pub project_manager: ProjectManager,
 
     pub show_sidebar: bool,
     pub show_drawer: bool,
@@ -103,8 +106,8 @@ impl LakeTexApp {
         // Configure math and symbol fallback fonts
         ThemeConfig::configure_fonts(&cc.egui_ctx);
 
-        let document = if let Some(path) = initial_file {
-            Document::load_from_file(&path).unwrap_or_default()
+        let document = if let Some(ref path) = initial_file {
+            Document::load_from_file(path).unwrap_or_default()
         } else {
             Document::default()
         };
@@ -120,8 +123,19 @@ impl LakeTexApp {
         let typeset_pages = DocumentLayout::layout_document(&ast);
         let latest_pdf_bytes = None;
 
+        let initial_working_dir = initial_file
+            .as_ref()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
         // Submit initial compilation in background worker thread
-        compiler.submit(document.content.clone(), engine);
+        compiler.submit(
+            document.content.clone(),
+            engine,
+            Some(initial_working_dir.clone()),
+        );
+
+        let project_manager = ProjectManager::new(Some(initial_working_dir));
 
         let available_themes = ThemeConfig::discover_themes();
         let current_theme = available_themes
@@ -143,6 +157,7 @@ impl LakeTexApp {
             editor_panel: EditorPanel::new(),
             sidebar: Sidebar::new(),
             drawer: Drawer::new(),
+            project_manager,
             show_sidebar: true,
             show_drawer: false,
             typeset_pages,
@@ -188,8 +203,12 @@ impl LakeTexApp {
                 }
             }
         } else {
-            self.compiler
-                .submit(self.document.content.clone(), self.engine);
+            let work_dir = Some(self.project_manager.root_dir.clone());
+            self.compiler.submit(
+                self.document.content.clone(),
+                self.engine,
+                work_dir,
+            );
             self.status_message = "Compiling...".to_string();
         }
     }
@@ -206,6 +225,9 @@ impl LakeTexApp {
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::N)) {
             self.new_document();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::P)) {
+            self.project_manager.show_modal = !self.project_manager.show_modal;
         }
     }
 
@@ -239,19 +261,82 @@ impl LakeTexApp {
             .add_filter("LaTeX Document", &["tex"])
             .pick_file()
         {
-            match Document::load_from_file(&path) {
-                Ok(doc) => {
-                    self.document = doc;
-                    self.canvas.reset_cache();
-                    let ast = NativeLatexParser::parse(&self.document.content);
-                    self.latest_pdf_bytes =
-                        crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast)
-                            .ok();
-                    self.status_message = format!("Loaded {}", path.display());
-                    self.trigger_compilation();
+            self.open_file_from_path(&path);
+        }
+    }
+
+    pub fn open_file_from_path(&mut self, path: &Path) {
+        match Document::load_from_file(path) {
+            Ok(doc) => {
+                self.document = doc;
+                self.canvas.reset_cache();
+                let ast = NativeLatexParser::parse(&self.document.content);
+                self.latest_pdf_bytes =
+                    crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast)
+                        .ok();
+                self.status_message = format!("Loaded {}", path.display());
+
+                // If opened file lives in a different project directory, update working directory
+                if let Some(parent) = path.parent() {
+                    if !path.starts_with(&self.project_manager.root_dir) {
+                        self.project_manager.set_root_dir(parent.to_path_buf());
+                    }
                 }
-                Err(e) => {
-                    self.status_message = format!("Open error: {e}");
+
+                self.trigger_compilation();
+            }
+            Err(e) => {
+                self.status_message = format!("Open error: {e}");
+            }
+        }
+    }
+
+    pub fn insert_snippet_into_editor(&mut self, snippet: &str) {
+        if let Some(pos) = self.document.content.rfind("\\end{document}") {
+            self.document.content.insert_str(pos, snippet);
+        } else {
+            self.document.content.push_str(snippet);
+        }
+        self.document.refresh_caches();
+        self.recompute_native_layout();
+        if self.auto_compile {
+            self.trigger_compilation();
+        }
+    }
+
+    pub fn handle_project_action(&mut self, ctx: &egui::Context, action: ProjectAction) {
+        match action {
+            ProjectAction::None => {}
+            ProjectAction::OpenTexFile(path) => {
+                self.open_file_from_path(&path);
+            }
+            ProjectAction::InsertIncludeGraphics {
+                relative_path,
+                label,
+            } => {
+                let forward_path = relative_path.replace('\\', "/");
+                let snippet = format!(
+                    "\n\\begin{{figure}}[htbp]\n    \\centering\n    \\includegraphics[width=0.8\\linewidth]{{{forward_path}}}\n    \\caption{{{label}}}\n    \\label{{fig:{label}}}\n\\end{{figure}}\n"
+                );
+                ctx.copy_text(snippet.clone());
+                self.insert_snippet_into_editor(&snippet);
+                self.status_message = format!("Inserted figure: {forward_path}");
+            }
+            ProjectAction::InsertInput { relative_path } => {
+                let forward_path = relative_path.replace('\\', "/");
+                let snippet = format!("\n\\input{{{forward_path}}}\n");
+                ctx.copy_text(snippet.clone());
+                self.insert_snippet_into_editor(&snippet);
+                self.status_message = format!("Inserted input: {forward_path}");
+            }
+            ProjectAction::CopyToClipboard(text) => {
+                ctx.copy_text(text);
+                self.status_message = "Copied to clipboard".to_string();
+            }
+            ProjectAction::WorkingDirChanged(dir) => {
+                self.status_message = format!("Working directory: {}", dir.display());
+                if self.auto_compile {
+                    self.trigger_compilation();
                 }
             }
         }
@@ -634,6 +719,9 @@ impl eframe::App for LakeTexApp {
             if action.save_as_requested {
                 self.save_document_as();
             }
+            if action.project_files_requested {
+                self.project_manager.show_modal = !self.project_manager.show_modal;
+            }
             if let Some(kind) = action.load_builtin_doc {
                 self.load_builtin_doc(kind);
             }
@@ -731,6 +819,8 @@ impl eframe::App for LakeTexApp {
                         self.document.char_count(),
                         self.document.line_count(),
                         self.last_duration_ms,
+                        &mut self.project_manager,
+                        self.document.path.as_deref(),
                     );
 
                     match action {
@@ -762,6 +852,9 @@ impl eframe::App for LakeTexApp {
                         }
                         SidebarAction::ExportBuiltinDoc(kind) => {
                             self.export_builtin_doc(kind);
+                        }
+                        SidebarAction::Project(project_act) => {
+                            self.handle_project_action(ctx, project_act);
                         }
                         SidebarAction::None => {}
                     }
@@ -831,6 +924,12 @@ impl eframe::App for LakeTexApp {
 
         // 6. External Dependency Installation Consent Modal
         self.render_dependency_prompt(ctx);
+
+        // 7. Overleaf-style Working Directory & Project Files Modal
+        let modal_action = self
+            .project_manager
+            .show_modal(ctx, self.document.path.as_deref());
+        self.handle_project_action(ctx, modal_action);
 
         // Request rapid repaints while tasks are compiling or installing
         if self.compiler.is_compiling() || self.dependency_prompt.is_installing {

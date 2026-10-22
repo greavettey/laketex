@@ -26,6 +26,8 @@ pub struct ToolbarAction {
     pub save_requested: bool,
     /// True if the user clicked Save File As
     pub save_as_requested: bool,
+    /// True if the user clicked Project Files or pressed Ctrl+P
+    pub project_files_requested: bool,
     /// User requested to load a built-in documentation manual into the editor
     pub load_builtin_doc: Option<BuiltinDocKind>,
 }
@@ -75,6 +77,13 @@ impl Toolbar {
             }
             if ui.button("Save").clicked() {
                 action.save_requested = true;
+            }
+            if ui
+                .button("📁 Files (Ctrl+P)")
+                .on_hover_text("Open Overleaf-style Working Directory & Project Files Manager (Ctrl+P)")
+                .clicked()
+            {
+                action.project_files_requested = true;
             }
 
             // Built-in LaTeX Documentation Menu

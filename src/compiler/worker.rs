@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use crate::compiler::engine::{CompileResult, CompilerEngine, EngineKind};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ pub struct CompileTask {
     pub source: String,
     /// Compiler engine backend to invoke
     pub engine: EngineKind,
+    /// Optional working directory for resolving images, inputs, and relative assets
+    pub work_dir: Option<PathBuf>,
     /// Creation instant used for debouncing
     pub timestamp: Instant,
 }
@@ -71,7 +74,7 @@ impl CompilerWorker {
                         let result = CompilerEngine::compile(
                             &current_task.source,
                             current_task.engine,
-                            None,
+                            current_task.work_dir.as_deref(),
                         )
                         .map_err(|e| e.to_string());
 
@@ -112,12 +115,18 @@ impl CompilerWorker {
     }
 
     /// Submits LaTeX code for compilation (debounced). Returns the assigned task ID.
-    pub fn submit(&self, source: String, engine: EngineKind) -> u64 {
+    pub fn submit(
+        &self,
+        source: String,
+        engine: EngineKind,
+        work_dir: Option<PathBuf>,
+    ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let task = CompileTask {
             id,
             source,
             engine,
+            work_dir,
             timestamp: Instant::now(),
         };
         let _ = self.task_sender.send(task);
