@@ -1,0 +1,20 @@
+name: Solarized Dark
+dark_mode: true
+colors:
+  background: "#002b36"
+  panel_background: "#073642"
+  editor_background: "#002b36"
+  faint_bg: "#073642"
+  text: "#839496"
+  text_muted: "#586e75"
+  selection: "#073642"
+  selection_stroke: "#268bd2"
+  accent: "#268bd2"
+  border: "#073642"
+  button_bg: "#073642"
+  button_hover: "#0a4554"
+  button_active: "#586e75"
+  error: "#dc322f"
+  warning: "#b58900"
+  success: "#859900"
+  info: "#2aa198"

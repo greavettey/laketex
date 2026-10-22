@@ -1,0 +1,42 @@
+[package]
+name = "laketex"
+version = "0.1.0"
+edition = "2021"
+authors = ["Laketex Contributors"]
+description = "Lightweight, portable LaTeX viewer and editor in Rust with live compilation, auto-package import, and headless API"
+
+[dependencies]
+# GUI Framework
+eframe = { version = "0.31", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "persistence",
+] }
+egui = "0.31"
+
+# PDF Rendering
+pdfium-render = "0.9"
+pdfium-bundled = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# CLI & Headless HTTP
+clap = { version = "4.5", features = ["derive"] }
+tiny_http = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+base64 = "0.22"
+
+# Utilities
+thiserror = "2.0"
+rfd = "0.15"
+tempfile = "3.17"
+ureq = { version = "2.12", features = ["json"] }
+printpdf = "0.12.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,7 @@
+/target
+/parity_report
+/parity_sample
+/parity_release
+*.pdf
+_minted-*
+

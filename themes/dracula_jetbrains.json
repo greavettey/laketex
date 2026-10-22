@@ -1,0 +1,23 @@
+{
+  "name": "Dracula (JetBrains)",
+  "dark_mode": true,
+  "colors": {
+    "background": "#282a36",
+    "panel_background": "#21222c",
+    "editor_background": "#282a36",
+    "faint_bg": "#282a36",
+    "text": "#f8f8f2",
+    "text_muted": "#6272a4",
+    "selection": "#44475a",
+    "selection_stroke": "#bd93f9",
+    "accent": "#bd93f9",
+    "border": "#383a59",
+    "button_bg": "#32344a",
+    "button_hover": "#44475a",
+    "button_active": "#6272a4",
+    "error": "#ff5555",
+    "warning": "#ffb86c",
+    "success": "#50fa7b",
+    "info": "#8be9fd"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "Monokai Pro",
+  "dark_mode": true,
+  "colors": {
+    "background": "#2d2a2e",
+    "panel_background": "#221f22",
+    "editor_background": "#19181a",
+    "faint_bg": "#221f22",
+    "text": "#fcfcfa",
+    "text_muted": "#727072",
+    "selection": "#403e41",
+    "selection_stroke": "#ffd866",
+    "accent": "#ffd866",
+    "border": "#403e41",
+    "button_bg": "#363337",
+    "button_hover": "#4a474b",
+    "button_active": "#5b595c",
+    "error": "#ff6188",
+    "warning": "#fc9867",
+    "success": "#a9dc76",
+    "info": "#78dce8"
+  }
+}

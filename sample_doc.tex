@@ -1,0 +1,34 @@
+\documentclass{article}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+
+\title{Laketex Test Document}
+\author{Laketex Team}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+Laketex is a lightweight, portable LaTeX viewer and editor in Rust.
+
+\subsection{Mathematics}
+\begin{equation}
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+\end{equation}
+
+\subsection{Summary Table}
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llr}
+\toprule
+Name & Platform & Size \\
+\midrule
+Laketex & Portable Rust & 6.8 MB \\
+TeXstudio & C++/Qt & 180 MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
