@@ -8,7 +8,63 @@
 use crate::error::{LakeTexError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
+use std::sync::OnceLock;
+
+static CACHED_PYTHON_ENV: OnceLock<PythonEnvironment> = OnceLock::new();
+
+/// Static specification of a known LaTeX package external tool dependency.
+pub struct DependencySpec {
+    pub latex_package: &'static str,
+    pub name: &'static str,
+    pub binary_name: &'static str,
+    pub pip_package: Option<&'static str>,
+    pub kind: DependencyKind,
+    pub description: &'static str,
+    pub install_command: &'static str,
+}
+
+pub const KNOWN_DEPENDENCY_SPECS: &[DependencySpec] = &[
+    DependencySpec {
+        latex_package: "minted",
+        name: "Pygments",
+        binary_name: "pygmentize",
+        pip_package: Some("pygments"),
+        kind: DependencyKind::PythonPackage,
+        description: "Pygments syntax highlighting engine required by LaTeX minted package",
+        install_command: "python -m pip install pygments",
+    },
+    DependencySpec {
+        latex_package: "pythontex",
+        name: "PythonTeX",
+        binary_name: "pythontex",
+        pip_package: Some("pythontex"),
+        kind: DependencyKind::PythonPackage,
+        description: "Executes Python code blocks embedded within LaTeX documents",
+        install_command: "python -m pip install pythontex",
+    },
+    DependencySpec {
+        latex_package: "dot2tex",
+        name: "dot2tex",
+        binary_name: "dot2tex",
+        pip_package: Some("dot2tex"),
+        kind: DependencyKind::PythonPackage,
+        description: "Converts Graphviz DOT graphs into native PSTricks or TikZ code",
+        install_command: "python -m pip install dot2tex",
+    },
+    DependencySpec {
+        latex_package: "gnuplottex",
+        name: "Gnuplot",
+        binary_name: "gnuplot",
+        pip_package: None,
+        kind: DependencyKind::SystemBinary,
+        description: "Generates high-precision scientific plots directly in LaTeX",
+        install_command: if cfg!(windows) {
+            "winget install gnuplot"
+        } else {
+            "brew install gnuplot"
+        },
+    },
+];
 
 /// Classification of package external dependencies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,7 +259,12 @@ impl PackageManager {
     }
 
     /// Probes the system Python environment and detects version, path, scripts directory, and pip.
+    /// Results are cached statically to avoid spawning subprocesses repeatedly.
     pub fn check_python_environment() -> PythonEnvironment {
+        CACHED_PYTHON_ENV.get_or_init(Self::probe_python_environment).clone()
+    }
+
+    fn probe_python_environment() -> PythonEnvironment {
         let candidates = if cfg!(windows) {
             vec!["python", "py", "python3"]
         } else {
@@ -211,7 +272,7 @@ impl PackageManager {
         };
 
         for candidate in candidates {
-            let output = Command::new(candidate)
+            let output = crate::create_hidden_command(candidate)
                 .args(["-c", "import sys, sysconfig; print(sys.executable); print(sys.version.split()[0]); print(sysconfig.get_path('scripts'))"])
                 .output();
 
@@ -224,7 +285,7 @@ impl PackageManager {
                     let scripts = lines.next().map(|s| s.trim().to_string());
 
                     // Check if pip is available with this interpreter
-                    let pip_status = Command::new(candidate)
+                    let pip_status = crate::create_hidden_command(candidate)
                         .args(["-m", "pip", "--version"])
                         .output()
                         .map(|o| o.status.success())
@@ -339,88 +400,50 @@ impl PackageManager {
 
     /// Returns catalog of known external tool dependencies for LaTeX packages.
     pub fn get_known_dependencies() -> Vec<PackageDependency> {
-        let env = Self::check_python_environment();
-        let py_cmd = if env.python_available {
-            "python -m pip install pygments".to_string()
-        } else {
-            "pip install pygments (Python required)".to_string()
-        };
-
-        vec![
-            PackageDependency {
-                latex_package: "minted".to_string(),
-                name: "Pygments".to_string(),
-                binary_name: "pygmentize".to_string(),
-                pip_package: Some("pygments".to_string()),
-                kind: DependencyKind::PythonPackage,
-                description: "Pygments syntax highlighting engine required by LaTeX minted package"
-                    .to_string(),
-                installed: Self::is_binary_available("pygmentize"),
-                install_command: py_cmd,
-                binary_path: Self::find_binary_path("pygmentize")
-                    .map(|p| p.to_string_lossy().to_string()),
-            },
-            PackageDependency {
-                latex_package: "pythontex".to_string(),
-                name: "PythonTeX".to_string(),
-                binary_name: "pythontex".to_string(),
-                pip_package: Some("pythontex".to_string()),
-                kind: DependencyKind::PythonPackage,
-                description: "Executes Python code blocks embedded within LaTeX documents"
-                    .to_string(),
-                installed: Self::is_binary_available("pythontex"),
-                install_command: "python -m pip install pythontex".to_string(),
-                binary_path: Self::find_binary_path("pythontex")
-                    .map(|p| p.to_string_lossy().to_string()),
-            },
-            PackageDependency {
-                latex_package: "dot2tex".to_string(),
-                name: "dot2tex".to_string(),
-                binary_name: "dot2tex".to_string(),
-                pip_package: Some("dot2tex".to_string()),
-                kind: DependencyKind::PythonPackage,
-                description: "Converts Graphviz DOT graphs into native PSTricks or TikZ code"
-                    .to_string(),
-                installed: Self::is_binary_available("dot2tex"),
-                install_command: "python -m pip install dot2tex".to_string(),
-                binary_path: Self::find_binary_path("dot2tex")
-                    .map(|p| p.to_string_lossy().to_string()),
-            },
-            PackageDependency {
-                latex_package: "gnuplottex".to_string(),
-                name: "Gnuplot".to_string(),
-                binary_name: "gnuplot".to_string(),
-                pip_package: None,
-                kind: DependencyKind::SystemBinary,
-                description: "Generates high-precision scientific plots directly in LaTeX"
-                    .to_string(),
-                installed: Self::is_binary_available("gnuplot"),
-                install_command: if cfg!(windows) {
-                    "winget install gnuplot".to_string()
-                } else {
-                    "brew install gnuplot".to_string()
-                },
-                binary_path: Self::find_binary_path("gnuplot")
-                    .map(|p| p.to_string_lossy().to_string()),
-            },
-        ]
+        KNOWN_DEPENDENCY_SPECS
+            .iter()
+            .map(|spec| {
+                let bin_path = Self::find_binary_path(spec.binary_name);
+                let installed = bin_path.is_some() || Self::is_binary_available(spec.binary_name);
+                PackageDependency {
+                    latex_package: spec.latex_package.to_string(),
+                    name: spec.name.to_string(),
+                    binary_name: spec.binary_name.to_string(),
+                    pip_package: spec.pip_package.map(|s| s.to_string()),
+                    kind: spec.kind.clone(),
+                    description: spec.description.to_string(),
+                    installed,
+                    install_command: spec.install_command.to_string(),
+                    binary_path: bin_path.map(|p| p.to_string_lossy().to_string()),
+                }
+            })
+            .collect()
     }
 
     /// Detects external dependencies required by packages declared in the document source.
+    /// Fast: only performs binary lookups for packages actually declared in `source`.
     pub fn detect_dependencies(source: &str) -> Vec<PackageDependency> {
         let declared = Self::detect_packages(source);
         let mut deps = Vec::new();
-        let known = Self::get_known_dependencies();
 
         for pkg in &declared {
-            for dep in &known {
-                if dep.latex_package == pkg.name {
-                    let mut d = dep.clone();
-                    d.installed = Self::is_binary_available(&d.binary_name);
-                    d.binary_path = Self::find_binary_path(&d.binary_name)
-                        .map(|p| p.to_string_lossy().to_string());
-                    deps.push(d);
-                }
+            if let Some(spec) = KNOWN_DEPENDENCY_SPECS
+                .iter()
+                .find(|s| s.latex_package == pkg.name)
+            {
+                let bin_path = Self::find_binary_path(spec.binary_name);
+                let installed = bin_path.is_some() || Self::is_binary_available(spec.binary_name);
+                deps.push(PackageDependency {
+                    latex_package: spec.latex_package.to_string(),
+                    name: spec.name.to_string(),
+                    binary_name: spec.binary_name.to_string(),
+                    pip_package: spec.pip_package.map(|s| s.to_string()),
+                    kind: spec.kind.clone(),
+                    description: spec.description.to_string(),
+                    installed,
+                    install_command: spec.install_command.to_string(),
+                    binary_path: bin_path.map(|p| p.to_string_lossy().to_string()),
+                });
             }
         }
 
@@ -450,7 +473,7 @@ impl PackageManager {
         }
 
         let python_exe = env.python_path.as_deref().unwrap_or("python");
-        let output = Command::new(python_exe)
+        let output = crate::create_hidden_command(python_exe)
             .args(["-m", "pip", "install", dep_name])
             .output()
             .map_err(|e| LakeTexError::Dependency(format!("Failed to spawn pip installer: {e}")))?;

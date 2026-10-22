@@ -13,7 +13,6 @@ use crate::engine::pdf_exporter::NativePdfExporter;
 use crate::error::{LakeTexError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Instant;
 
 /// Supported LaTeX compiler backends.
@@ -198,7 +197,7 @@ impl CompilerEngine {
 
     fn probe_engine(kind: EngineKind) -> (bool, Option<PathBuf>, Option<String>) {
         if let Some(path) = Self::find_engine_path(kind) {
-            let output = Command::new(&path).arg("--version").output();
+            let output = crate::create_hidden_command(&path).arg("--version").output();
             if let Ok(out) = output {
                 if out.status.success() {
                     let ver = String::from_utf8_lossy(&out.stdout)
@@ -303,7 +302,7 @@ impl CompilerEngine {
 
         std::fs::write(&tex_file_path, &effective_source).map_err(LakeTexError::Io)?;
 
-        let mut cmd = Command::new(&engine_path);
+        let mut cmd = crate::create_hidden_command(&engine_path);
         cmd.current_dir(run_dir);
 
         match kind {
@@ -348,7 +347,7 @@ impl CompilerEngine {
             let _ = std::fs::write(&tex_file_path, &fallback_source);
             let _ = std::fs::remove_file(&pdf_file_path);
 
-            let mut retry_cmd = Command::new(&engine_path);
+            let mut retry_cmd = crate::create_hidden_command(&engine_path);
             retry_cmd.current_dir(run_dir);
             match kind {
                 EngineKind::Tectonic => {
@@ -428,7 +427,7 @@ impl CompilerEngine {
             && pdf_file_path.exists();
 
         if needs_rerun {
-            let mut pass2_cmd = Command::new(&engine_path);
+            let mut pass2_cmd = crate::create_hidden_command(&engine_path);
             pass2_cmd.current_dir(run_dir);
             match kind {
                 EngineKind::Tectonic => {

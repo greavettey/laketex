@@ -42,14 +42,13 @@ impl NativePageRenderer {
 
         let mut double_clicked_line = None;
 
+        let margin_i8 = ((page.margin * zoom) as i32).clamp(0, 120) as i8;
+
         // Outer page container with drop shadow
         let frame_response = egui::Frame::new()
             .fill(paper_bg)
             .stroke(Stroke::new(1.0_f32, line_color))
-            .inner_margin(egui::Margin::symmetric(
-                (page.margin * zoom) as i8,
-                (page.margin * zoom) as i8,
-            ))
+            .inner_margin(egui::Margin::symmetric(margin_i8, margin_i8))
             .show(ui, |ui| {
                 ui.set_width(display_width - (page.margin * 2.0 * zoom));
                 ui.set_min_height(display_height - (page.margin * 2.0 * zoom));

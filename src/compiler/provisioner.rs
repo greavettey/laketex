@@ -9,7 +9,6 @@ use crate::compiler::engine::CompilerEngine;
 use crate::error::{LakeTexError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Automatic provisioning manager for portable compiler binaries.
 pub struct Provisioner;
@@ -83,7 +82,7 @@ impl Provisioner {
         let extracted = Self::extract_archive(&temp_archive, &bin_dir)?;
         if !extracted {
             if cfg!(windows) {
-                let status = Command::new("powershell")
+                let status = crate::create_hidden_command("powershell")
                     .args([
                         "-NoProfile",
                         "-Command",
@@ -116,7 +115,7 @@ impl Provisioner {
     }
 
     fn extract_archive(archive: &Path, destination: &Path) -> Result<bool> {
-        let status = Command::new("tar")
+        let status = crate::create_hidden_command("tar")
             .arg("-xf")
             .arg(archive)
             .arg("-C")

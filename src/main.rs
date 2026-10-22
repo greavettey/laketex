@@ -4,12 +4,28 @@
 //! `watch`, `compare`, `serve`) or initialize the `eframe` GUI desktop application with
 //! an embedded background REST API daemon.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use clap::Parser;
 use laketex::headless::{CliArgs, HeadlessServer};
 use laketex::ui::LakeTexApp;
 use std::sync::atomic::Ordering;
 
+#[cfg(windows)]
+fn attach_parent_console() {
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
+    extern "system" {
+        fn AttachConsole(dwProcessId: u32) -> i32;
+    }
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    attach_parent_console();
+
     let args = CliArgs::parse();
 
     // If a CLI subcommand was provided, run headless and exit

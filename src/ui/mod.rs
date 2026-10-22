@@ -115,12 +115,12 @@ impl LakeTexApp {
         let engine = EngineKind::Native; // Default to Native Pure-Rust Engine
         let view_mode = ViewMode::NativeVector;
 
-        // Compute initial native layout
+        // Compute initial native layout for instant display
         let ast = NativeLatexParser::parse(&document.content);
         let typeset_pages = DocumentLayout::layout_document(&ast);
-        let latest_pdf_bytes = crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
+        let latest_pdf_bytes = None;
 
-        // Submit initial compilation
+        // Submit initial compilation in background worker thread
         compiler.submit(document.content.clone(), engine);
 
         let available_themes = ThemeConfig::discover_themes();
@@ -570,14 +570,14 @@ impl eframe::App for LakeTexApp {
             }
         }
 
-        // Auto-prompt user consent for missing package dependencies if needed
+        // Auto-prompt user consent for missing package dependencies if needed (checked once on startup)
         if !self.dependency_prompt.auto_prompted_once
             && !self.dependency_prompt.user_declined
             && !self.dependency_prompt.is_installing
         {
+            self.dependency_prompt.auto_prompted_once = true;
             let missing = PackageManager::detect_dependencies(&self.document.content);
             if let Some(first_missing) = missing.into_iter().find(|d| !d.installed) {
-                self.dependency_prompt.auto_prompted_once = true;
                 self.prompt_dependency_consent(first_missing);
             }
         }

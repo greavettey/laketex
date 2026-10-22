@@ -51,3 +51,15 @@ pub mod ui;
 pub mod viewer;
 
 pub use error::{LakeTexError, Result};
+
+/// Creates a standard `std::process::Command` configured with `CREATE_NO_WINDOW` on Windows
+/// to prevent console window popups when invoking external subprocesses.
+pub fn create_hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd
+}
