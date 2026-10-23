@@ -22,6 +22,7 @@ pub mod native_renderer;
 pub mod parser;
 pub mod pdf_exporter;
 pub mod render_debugger;
+pub mod syntax;
 
 pub use ast::{DocumentBlock, InlineSpan, LatexAst, PaperSize};
 pub use layout::{DocumentLayout, TypesetElement, TypesetPage};
@@ -30,3 +31,4 @@ pub use native_renderer::NativePageRenderer;
 pub use parser::NativeLatexParser;
 pub use pdf_exporter::NativePdfExporter;
 pub use render_debugger::{RenderDebugItem, RenderDebugReport, RenderDebugger, RenderIssueSeverity};
+pub use syntax::SyntaxHighlighter;

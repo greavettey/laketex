@@ -1,7 +1,36 @@
+# Rust build artifacts
+target/
 /target
-/parity_report
-/parity_sample
-/parity_release
+**/target/
+Cargo.lock.bak
+*.rs.bk
+
+# Generated binaries and intermediate outputs
+*.pdb
+*.obj
+*.lib
+*.tmp
+*.exe.tmp
+*.log
+
+# Laketex local runtime configuration and caches
+laketex_config.json
 *.pdf
 _minted-*
 
+# Parity benchmark runs and test output directories
+/parity_report
+/parity_sample
+/parity_release
+
+# Scratch and temporary directories
+scratch/
+test_embedded*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

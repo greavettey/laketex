@@ -9,6 +9,7 @@
 use crate::document::outline::OutlineItem;
 use crate::document::packages::{PackageDependency, PackageInfo, PackageManager};
 use crate::document::{BuiltinDoc, BuiltinDocKind};
+use crate::t;
 use egui::{Color32, RichText, ScrollArea, Ui};
 
 /// Active view tab in the sidebar panel.
@@ -71,6 +72,8 @@ impl Sidebar {
         Self::default()
     }
 
+    /// Renders the left collapsible sidebar displaying project navigation trees,
+    /// document outline hierarchies, math symbol palettes, package inspectors, and statistics.
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -88,12 +91,12 @@ impl Sidebar {
         ui.vertical(|ui| {
             // Tab switcher
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Outline, "Outline");
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Files, "📁 Files");
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Packages, "Packages");
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Snippets, "Math");
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Docs, "📖 Docs");
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Metrics, "Info");
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Outline, t!("sidebar.outline"));
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Files, format!("📁 {}", t!("sidebar.files")));
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Packages, t!("sidebar.packages"));
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Snippets, t!("sidebar.snippets"));
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Docs, format!("📖 {}", t!("sidebar.docs")));
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Metrics, t!("sidebar.metrics"));
             });
 
             ui.separator();

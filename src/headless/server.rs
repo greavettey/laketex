@@ -79,12 +79,15 @@ impl Default for HeadlessServer {
 }
 
 impl HeadlessServer {
+    /// Constructs a new [`HeadlessServer`] instance with active running state.
     pub fn new() -> Self {
         Self {
             running: Arc::new(AtomicBool::new(true)),
         }
     }
 
+    /// Spawns the HTTP REST API server on a dedicated background thread,
+    /// returning an [`Arc<AtomicBool>`] handle that can be used to signal graceful shutdown.
     pub fn start_background(host: &str, port: u16) -> std::io::Result<Arc<AtomicBool>> {
         let address = format!("{host}:{port}");
         let server = Server::http(&address).map_err(|e| {
@@ -421,6 +424,7 @@ impl HeadlessServer {
         Ok(running)
     }
 
+    /// Runs the HTTP REST API server on the calling thread, blocking until interrupted (e.g. via `Ctrl+C`).
     pub fn run_blocking(&self, host: &str, port: u16) -> std::io::Result<()> {
         let address = format!("{host}:{port}");
         let _handle = Self::start_background(host, port)?;

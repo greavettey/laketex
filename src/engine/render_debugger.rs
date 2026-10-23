@@ -535,8 +535,16 @@ impl RenderDebugger {
                 }
             }
 
-            // Check 3: Unbalanced curly braces inside math lines
-            if trimmed.contains('$') || trimmed.contains('\\') {
+            // Check 3: Unbalanced curly braces inside math formulas
+            let is_math_line = trimmed.contains('$')
+                || (trimmed.contains('\\')
+                    && (trimmed.contains("\\frac")
+                        || trimmed.contains("\\sqrt")
+                        || trimmed.contains("\\mathbf")
+                        || trimmed.contains("\\math")
+                        || trimmed.contains("\\sum")
+                        || trimmed.contains("\\int")));
+            if is_math_line && !trimmed.ends_with('{') && !trimmed.starts_with('}') {
                 let open_braces = trimmed.chars().filter(|&c| c == '{').count();
                 let close_braces = trimmed.chars().filter(|&c| c == '}').count();
                 if open_braces != close_braces && !trimmed.contains("\\begin{") && !trimmed.contains("\\end{") {
@@ -546,10 +554,10 @@ impl RenderDebugger {
                         category: "Math Braces".to_string(),
                         severity: RenderIssueSeverity::Error,
                         issue: format!(
-                            "Mismatched curly braces on line {line_num} ({open_braces} open vs {close_braces} close). Unbalanced braces break formula parsing and abort AST building."
+                            "Mismatched curly braces in math expression on line {line_num} ({open_braces} open vs {close_braces} close). Unbalanced braces break formula parsing and abort AST building."
                         ),
                         snippet: trimmed.to_string(),
-                        suggested_fix: "Ensure every opening '{' has a matching closing '}'.".to_string(),
+                        suggested_fix: "Ensure every opening '{' has a matching closing '}' in the formula.".to_string(),
                     });
                 }
             }

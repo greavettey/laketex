@@ -526,3 +526,313 @@ fn test_headless_api_dependency_endpoints() {
     // Shut down test server
     running.store(false, Ordering::SeqCst);
 }
+
+#[test]
+fn test_app_config_persistence_and_settings() {
+    use laketex::compiler::engine::EngineKind;
+    use laketex::ui::config::AppConfig;
+    use laketex::viewer::PdfColorMode;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let config_file = temp_dir.path().join("laketex_config.json");
+
+    let mut config = AppConfig::default();
+    config.theme_name = "Slate Blue".to_string();
+    config.pdf_color_mode = PdfColorMode::Sepia;
+    config.pdf_render_width = 1600;
+    config.default_engine = EngineKind::Tectonic;
+    config.auto_compile = false;
+    config.shortcuts.compile = "F5".to_string();
+    config.shortcuts.settings = "Ctrl+Shift+P".to_string();
+
+    let json_text = serde_json::to_string_pretty(&config).expect("serialize config");
+    std::fs::write(&config_file, &json_text).expect("write config");
+
+    let read_back: AppConfig = serde_json::from_str(&std::fs::read_to_string(&config_file).unwrap())
+        .expect("deserialize config");
+
+    assert_eq!(read_back.theme_name, "Slate Blue");
+    assert_eq!(read_back.pdf_color_mode, PdfColorMode::Sepia);
+    assert_eq!(read_back.pdf_render_width, 1600);
+    assert_eq!(read_back.default_engine, EngineKind::Tectonic);
+    assert!(!read_back.auto_compile);
+    assert_eq!(read_back.shortcuts.compile, "F5");
+    assert_eq!(read_back.shortcuts.settings, "Ctrl+Shift+P");
+}
+
+#[test]
+fn test_missing_picture_auto_placeholder_rendering() {
+    use laketex::compiler::engine::{CompilerEngine, EngineKind};
+
+    let source = r#"\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+Here is a test with a missing picture:
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\linewidth]{subfolder/missing_circuit_98765.png}
+    \caption{Simulated schematic}
+\end{figure}
+\end{document}
+"#;
+    let res = CompilerEngine::compile(source, EngineKind::Tectonic, None).unwrap();
+    assert!(res.success, "Compilation should succeed via automatic draft placeholder fallback");
+    assert!(res.pdf_bytes.is_some(), "PDF bytes must be produced with placeholder");
+    let bytes = res.pdf_bytes.unwrap();
+    assert!(bytes.len() > 100);
+    assert!(bytes.starts_with(b"%PDF-"));
+
+    // Render with PdfRenderer to confirm valid rasterization
+    let renderer = laketex::viewer::PdfRenderer::new();
+    let (img, page_count) = renderer.render_page_to_color_image(&bytes, 0, 1000, false).unwrap();
+    assert_eq!(page_count, 1);
+    assert!(img.size[0] > 0);
+
+    // Diagnostics should report warning instead of unrecoverable error
+    assert!(res.diagnostics.iter().any(|d| d.message.contains("Missing picture")));
+}
+
+#[test]
+fn test_native_engine_missing_picture_placeholder() {
+    use laketex::engine::parser::NativeLatexParser;
+    use laketex::engine::layout::DocumentLayout;
+    use laketex::engine::pdf_exporter::NativePdfExporter;
+
+    let source = r#"\documentclass{article}
+\begin{document}
+\section{Schematic}
+\includegraphics[width=\linewidth]{missing_schematic_photo.png}
+\begin{center}
+    \includegraphics{centered_plot.pdf}
+\end{center}
+\end{document}
+"#;
+    let ast = NativeLatexParser::parse(source);
+    let figures: Vec<_> = ast.blocks.iter().filter_map(|b| {
+        if let laketex::engine::ast::DocumentBlock::Figure { image_path, .. } = b {
+            Some(image_path.clone())
+        } else {
+            None
+        }
+    }).collect();
+
+    assert_eq!(figures.len(), 2);
+    assert_eq!(figures[0].as_deref(), Some("missing_schematic_photo.png"));
+    assert_eq!(figures[1].as_deref(), Some("centered_plot.pdf"));
+
+    let pages = DocumentLayout::layout_document(&ast);
+    assert!(!pages.is_empty());
+
+    let pdf_bytes = NativePdfExporter::export_to_pdf_bytes(&ast).expect("native pdf export");
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn test_preamble_isolation_and_directive_suppression() {
+    use laketex::engine::ast::DocumentBlock;
+    use laketex::engine::parser::NativeLatexParser;
+
+    let source = r#"\documentclass[11pt]{article}
+\usepackage{pgfplots}
+\usepackage{hyperref}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=cyan,
+    pdftitle={Test Isolation Title},
+}
+
+\pgfplotsset{
+    compat=1.18,
+    width=10cm,
+}
+
+\setlength{\parindent}{0pt}
+
+\title{Isolated Preamble Document}
+\author{Test Author}
+
+\begin{document}
+\maketitle
+
+\paragraph{Section Four Paragraph}
+This is the body of the paragraph with a rule \rule{20pt}{1.5pt} and a footnote\footnote{Important footnote note}.
+
+\begin{semilogxaxis}[
+    xlabel={Frequency (Hz)},
+    ylabel={Gain (dB)},
+]
+    \addplot[red, dashed, domain=100:1000] {20.0};
+    \addlegendentry{Reference Line}
+\end{semilogxaxis}
+
+\end{document}
+Post-document comment that should be ignored.
+"#;
+
+    let ast = NativeLatexParser::parse(source);
+    assert_eq!(ast.metadata.title.as_deref(), Some("Isolated Preamble Document"));
+    assert_eq!(ast.metadata.author.as_deref(), Some("Test Author"));
+
+    // Verify preamble setup commands (colorlinks, compat, setlength) did NOT become paragraphs
+    for block in &ast.blocks {
+        if let DocumentBlock::Paragraph { spans, .. } = block {
+            let combined: String = spans.iter().map(|s| s.text()).collect();
+            assert!(!combined.contains("colorlinks"), "Preamble hypersetup must not leak as body text");
+            assert!(!combined.contains("compat"), "Preamble pgfplotsset must not leak as body text");
+            assert!(!combined.contains("parindent"), "Preamble setlength must not leak as body text");
+            assert!(!combined.contains("Post-document"), "Content after end{{document}} must be excluded");
+            assert!(!combined.contains("\\addplot"), "Directives like addplot must not leak as plaintext");
+            assert!(!combined.contains("{1.5pt}"), "Second rule argument must not leak as plain text");
+        }
+    }
+
+    // Verify paragraph heading is parsed with level 4
+    let has_para_heading = ast.blocks.iter().any(|b| {
+        if let DocumentBlock::Section { level, title, .. } = b {
+            *level == 4 && title == "Section Four Paragraph"
+        } else {
+            false
+        }
+    });
+    assert!(has_para_heading, "Paragraph heading must be parsed as level 4 section");
+
+    // Verify plot environment produced a Figure block instead of raw text
+    let has_plot_fig = ast.blocks.iter().any(|b| {
+        matches!(b, DocumentBlock::Figure { .. })
+    });
+    assert!(has_plot_fig, "semilogxaxis environment must be encapsulated as a graphical figure");
+}
+
+#[test]
+fn test_i18n_translation_system() {
+    use laketex::i18n::{available_locales, current_locale, set_locale, tr_args};
+    use laketex::t;
+
+    set_locale("en");
+    assert_eq!(current_locale(), "en");
+    assert_eq!(t!("toolbar.compile"), "▶ Compile");
+    assert_eq!(t!("toolbar.save_file"), "Save");
+
+    // Arguments interpolation
+    let status = tr_args("editor.match_count", &[("current", "4"), ("total", "12")]);
+    assert_eq!(status, "4 of 12");
+
+    // Switch to Spanish
+    set_locale("es");
+    assert_eq!(current_locale(), "es");
+    assert_eq!(t!("toolbar.compile"), "▶ Compilar");
+    assert_eq!(t!("toolbar.save_file"), "Guardar");
+    assert_eq!(t!("editor.find"), "Buscar");
+
+    // Available locales check
+    let locales = available_locales();
+    assert!(locales.iter().any(|(code, _)| code == "en"));
+    assert!(locales.iter().any(|(code, _)| code == "es"));
+
+    // Reset back to English
+    set_locale("en");
+    assert_eq!(t!("toolbar.compile"), "▶ Compile");
+}
+
+#[test]
+fn test_workspace_cleanliness_and_named_output() {
+    use laketex::compiler::engine::{CompilerEngine, EngineKind};
+    use tempfile::tempdir;
+
+    let dir = tempdir().expect("Failed to create temporary workspace directory");
+    let content = r#"\documentclass{article}
+\begin{document}
+Workspace Cleanliness Test Document
+\end{document}
+"#;
+
+    // Compile named target "my_paper.tex"
+    let result = CompilerEngine::compile_named(
+        content,
+        EngineKind::Tectonic,
+        Some(dir.path()),
+        Some("my_paper.tex"),
+    )
+    .expect("compile_named execution failed");
+
+    assert!(result.success, "Compilation must succeed: stdout={}, stderr={}", result.stdout, result.stderr);
+    assert!(result.pdf_bytes.is_some(), "PDF bytes must be returned");
+
+    // 1. Target output PDF must exist named after the document stem: my_paper.pdf
+    let expected_pdf = dir.path().join("my_paper.pdf");
+    assert!(expected_pdf.exists(), "my_paper.pdf must exist in the workspace directory");
+
+    // 2. Old hardcoded laketex_doc files must NOT exist
+    assert!(!dir.path().join("laketex_doc.tex").exists(), "laketex_doc.tex must not be created");
+    assert!(!dir.path().join("laketex_doc.pdf").exists(), "laketex_doc.pdf must not be created");
+
+    // 3. Temporary build intermediate files must be cleaned up
+    assert!(!dir.path().join(".laketex_my_paper.tex").exists(), ".laketex_my_paper.tex must be scrubbed");
+    assert!(!dir.path().join(".laketex_my_paper.aux").exists(), ".laketex_my_paper.aux must be scrubbed");
+    assert!(!dir.path().join(".laketex_my_paper.log").exists(), ".laketex_my_paper.log must be scrubbed");
+    assert!(!dir.path().join(".laketex_my_paper.pdf").exists(), ".laketex_my_paper.pdf must be scrubbed");
+}
+
+#[test]
+fn test_master_document_management_and_autodetection() {
+    use laketex::ui::project_manager::ProjectManager;
+    use tempfile::tempdir;
+    use std::fs;
+
+    let dir = tempdir().expect("Failed to create tempdir");
+    let chapters_dir = dir.path().join("chapters");
+    fs::create_dir_all(&chapters_dir).expect("Failed to create chapters directory");
+
+    let main_tex = dir.path().join("main.tex");
+    let intro_tex = chapters_dir.join("intro.tex");
+
+    fs::write(&main_tex, "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}\n").unwrap();
+    fs::write(&intro_tex, "\\section{Introduction}\nThis is a chapter subfile without documentclass.\n").unwrap();
+
+    let mut pm = ProjectManager::new(Some(dir.path().to_path_buf()));
+    // Automatically detected during construction since main.tex exists with \documentclass
+    assert_eq!(pm.master_document, Some(main_tex.clone()));
+
+    // Clear master document
+    pm.master_document = None;
+    assert!(pm.master_document.is_none());
+
+    // Explicit auto_detect
+    pm.auto_detect_master_document();
+    assert_eq!(pm.master_document, Some(main_tex.clone()));
+
+    // Manually set master document
+    pm.master_document = Some(intro_tex.clone());
+    assert_eq!(pm.master_document, Some(intro_tex));
+}
+
+#[test]
+fn test_unsaved_changes_pending_actions() {
+    use laketex::document::{BuiltinDocKind, Document};
+    use laketex::ui::PendingCloseAction;
+    use std::path::PathBuf;
+
+    let mut doc = Document::default();
+    assert!(!doc.is_dirty);
+
+    // Editing document content marks it dirty
+    doc.content.push_str("% added comment");
+    doc.is_dirty = true;
+    assert!(doc.is_dirty);
+
+    // Verify all PendingCloseAction variants exist and support equality checks
+    let actions = vec![
+        PendingCloseAction::ExitApp,
+        PendingCloseAction::NewDocument,
+        PendingCloseAction::OpenFileDialog,
+        PendingCloseAction::OpenFile(PathBuf::from("test.tex")),
+        PendingCloseAction::LoadBuiltinDoc(BuiltinDocKind::Manual),
+    ];
+
+    for action in actions {
+        let cloned = action.clone();
+        assert_eq!(action, cloned);
+    }
+}

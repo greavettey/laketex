@@ -9,7 +9,7 @@
 //! - Persistent texture caching (never blanks out during transient compilation errors)
 //! - Double-click backward SyncTeX navigation returning normalized vertical coordinates
 
-use crate::viewer::PdfRenderer;
+use crate::viewer::{PdfColorMode, PdfRenderer};
 use egui::{vec2, Color32, Pos2, Rect, ScrollArea, Stroke, TextureHandle, TextureOptions, Ui};
 
 /// Interactive canvas for viewing rasterized PDF pages.
@@ -20,8 +20,12 @@ pub struct PdfCanvas {
     pub total_pages: usize,
     /// Zoom scale factor (1.0 = 100%)
     pub zoom: f32,
-    /// True if dark mode color inversion is enabled
+    /// Active color rendering mode
+    pub color_mode: PdfColorMode,
+    /// True if dark mode color inversion is enabled (synced with color_mode)
     pub invert_colors: bool,
+    /// Base rasterization target width in pixels (e.g. 1000, 1200, 1600, 2000)
+    pub base_render_width: u16,
     /// True if automatic width fitting is active
     pub fit_to_width: bool,
 
@@ -32,6 +36,8 @@ pub struct PdfCanvas {
     last_rendered_page: Option<usize>,
     last_rendered_zoom: Option<f32>,
     last_rendered_invert: Option<bool>,
+    last_rendered_mode: Option<PdfColorMode>,
+    last_rendered_base_width: Option<u16>,
     last_pdf_hash: Option<u64>,
 }
 
@@ -41,13 +47,17 @@ impl Default for PdfCanvas {
             current_page: 0,
             total_pages: 1,
             zoom: 1.0,
+            color_mode: PdfColorMode::AcademicDark,
             invert_colors: true, // Default to sleek academic dark mode
+            base_render_width: 1200,
             fit_to_width: true,
             texture: None,
             last_error: None,
             last_rendered_page: None,
             last_rendered_zoom: None,
             last_rendered_invert: None,
+            last_rendered_mode: None,
+            last_rendered_base_width: None,
             last_pdf_hash: None,
         }
     }
@@ -66,9 +76,27 @@ impl PdfCanvas {
         self.last_rendered_page = None;
         self.last_rendered_zoom = None;
         self.last_rendered_invert = None;
+        self.last_rendered_mode = None;
+        self.last_rendered_base_width = None;
         self.last_error = None;
         self.current_page = 0;
         self.total_pages = 1;
+    }
+
+    /// Updates color mode and keeps invert_colors in sync.
+    pub fn set_color_mode(&mut self, mode: PdfColorMode) {
+        if self.color_mode != mode {
+            self.color_mode = mode;
+            self.invert_colors = mode == PdfColorMode::AcademicDark;
+        }
+    }
+
+    /// Updates base render resolution width.
+    pub fn set_base_render_width(&mut self, width: u16) {
+        let w = width.clamp(600, 4000);
+        if self.base_render_width != w {
+            self.base_render_width = w;
+        }
     }
 
     /// Computes a lightweight 64-bit hash of PDF bytes to detect changes
@@ -97,11 +125,26 @@ impl PdfCanvas {
         };
 
         let current_hash = Self::hash_pdf(bytes);
-        let target_width = (1200.0 * self.zoom.clamp(0.5, 3.0)) as u16;
+        let base_w = if self.base_render_width >= 600 {
+            self.base_render_width
+        } else {
+            1200
+        };
+        let target_width = (base_w as f32 * self.zoom.clamp(0.5, 3.0)) as u16;
+
+        // Keep invert_colors and color_mode in sync
+        if self.invert_colors != (self.color_mode == PdfColorMode::AcademicDark) {
+            self.color_mode = if self.invert_colors {
+                PdfColorMode::AcademicDark
+            } else {
+                PdfColorMode::Normal
+            };
+        }
 
         let hash_changed = self.last_pdf_hash != Some(current_hash);
         let page_changed = self.last_rendered_page != Some(self.current_page);
-        let invert_changed = self.last_rendered_invert != Some(self.invert_colors);
+        let mode_changed = self.last_rendered_mode != Some(self.color_mode);
+        let width_changed = self.last_rendered_base_width != Some(self.base_render_width);
         let zoom_changed = self
             .last_rendered_zoom
             .map(|z| (z - self.zoom).abs() > 0.25)
@@ -110,15 +153,16 @@ impl PdfCanvas {
         let needs_rerender = (self.texture.is_none() && self.last_error.is_none())
             || hash_changed
             || page_changed
-            || invert_changed
+            || mode_changed
+            || width_changed
             || zoom_changed;
 
         if needs_rerender {
-            match renderer.render_page_to_color_image(
+            match renderer.render_page_to_color_image_with_mode(
                 bytes,
                 self.current_page,
                 target_width,
-                self.invert_colors,
+                self.color_mode,
             ) {
                 Ok((color_image, count)) => {
                     self.last_error = None;
@@ -135,6 +179,8 @@ impl PdfCanvas {
                     self.last_rendered_page = Some(self.current_page);
                     self.last_rendered_zoom = Some(self.zoom);
                     self.last_rendered_invert = Some(self.invert_colors);
+                    self.last_rendered_mode = Some(self.color_mode);
+                    self.last_rendered_base_width = Some(self.base_render_width);
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -146,6 +192,8 @@ impl PdfCanvas {
                     self.last_rendered_page = Some(self.current_page);
                     self.last_rendered_zoom = Some(self.zoom);
                     self.last_rendered_invert = Some(self.invert_colors);
+                    self.last_rendered_mode = Some(self.color_mode);
+                    self.last_rendered_base_width = Some(self.base_render_width);
                 }
             }
         }

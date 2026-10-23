@@ -14,15 +14,23 @@ static CACHED_PYTHON_ENV: OnceLock<PythonEnvironment> = OnceLock::new();
 
 /// Static specification of a known LaTeX package external tool dependency.
 pub struct DependencySpec {
+    /// Name of the LaTeX package requiring this external tool (e.g., `"minted"`).
     pub latex_package: &'static str,
+    /// Human-readable display name of the tool (e.g., `"Pygments"`).
     pub name: &'static str,
+    /// Executable CLI command name searched in system `PATH` (e.g., `"pygmentize"`).
     pub binary_name: &'static str,
+    /// Corresponding package name on PyPI if installable via pip (e.g., `Some("pygments")`).
     pub pip_package: Option<&'static str>,
+    /// Classification of the dependency (system binary, Python package, Perl script).
     pub kind: DependencyKind,
+    /// Explanation of why the LaTeX package requires this external dependency.
     pub description: &'static str,
+    /// Suggested installation command shown to the user or executed with consent.
     pub install_command: &'static str,
 }
 
+/// Known registry of LaTeX packages with external tool dependencies.
 pub const KNOWN_DEPENDENCY_SPECS: &[DependencySpec] = &[
     DependencySpec {
         latex_package: "minted",

@@ -295,7 +295,7 @@ impl DocumentLayout {
                     current_y += heading_height + 6.0;
                 }
 
-                DocumentBlock::Paragraph { spans, line } => {
+                DocumentBlock::Paragraph { spans, line, .. } => {
                     let total_chars: usize = spans
                         .iter()
                         .map(|s| match s {
@@ -312,8 +312,8 @@ impl DocumentLayout {
                         .sum();
 
                     let est_lines = (total_chars / 75).max(1);
-                    let line_height = base_font_size * 1.35;
-                    let para_height = (est_lines as f32) * line_height + 10.0;
+                    let line_height = base_font_size * 1.25;
+                    let para_height = (est_lines as f32) * line_height + 4.0;
 
                     if current_y + para_height > printable_height
                         && !current_page_elements.is_empty()
@@ -336,7 +336,7 @@ impl DocumentLayout {
                         para_height,
                         *line,
                     ));
-                    current_y += para_height + 8.0;
+                    current_y += para_height + 2.0;
                 }
 
                 DocumentBlock::EquationBlock {
@@ -571,6 +571,68 @@ impl DocumentLayout {
                         *line,
                     ));
                     current_y += 12.0;
+                }
+
+                DocumentBlock::CenteredBlock { spans, line } => {
+                    let total_chars: usize = spans.iter().map(|s| s.text().len()).sum();
+                    let est_lines = (total_chars / 60).max(1);
+                    let line_height = base_font_size * 1.25;
+                    let height = (est_lines as f32) * line_height + 4.0;
+                    current_page_elements.push(TypesetElement::new(
+                        ElementKind::Paragraph(spans.clone()),
+                        current_y,
+                        height,
+                        *line,
+                    ));
+                    current_y += height + 8.0;
+                }
+
+                DocumentBlock::QuoteBlock { spans, line } => {
+                    let total_chars: usize = spans.iter().map(|s| s.text().len()).sum();
+                    let est_lines = (total_chars / 65).max(1);
+                    let line_height = base_font_size * 1.25;
+                    let height = (est_lines as f32) * line_height + 6.0;
+                    current_page_elements.push(TypesetElement::new(
+                        ElementKind::Paragraph(spans.clone()),
+                        current_y,
+                        height,
+                        *line,
+                    ));
+                    current_y += height + 10.0;
+                }
+
+                DocumentBlock::TableOfContents { line } => {
+                    current_page_elements.push(TypesetElement::new(
+                        ElementKind::Heading {
+                            level: 1,
+                            number: String::new(),
+                            title: "Contents".to_string(),
+                            font_size: 14.0,
+                        },
+                        current_y,
+                        22.0,
+                        *line,
+                    ));
+                    current_y += 28.0;
+                }
+
+                DocumentBlock::PageBreak { line: _ } => {
+                    if !current_page_elements.is_empty() {
+                        let page_num = pages.len() + 1;
+                        pages.push(TypesetPage {
+                            page_number: page_num,
+                            total_pages: 0,
+                            width: page_width,
+                            height: page_height,
+                            margin,
+                            elements: std::mem::take(&mut current_page_elements),
+                        });
+                        current_y = 0.0;
+                    }
+                }
+
+                DocumentBlock::VerticalSpace { pt, line: _ } => {
+                    current_y += pt;
                 }
             }
         }

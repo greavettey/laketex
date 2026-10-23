@@ -11,6 +11,20 @@
 
 use egui::{Color32, FontId, Ui};
 
+/// A segment within display math: regular inline formula text or an embedded matrix.
+#[derive(Debug, Clone)]
+pub enum MathSegment {
+    /// Plain mathematical text or inline equation tokens.
+    Text(String),
+    /// An embedded mathematical matrix environment (e.g., `pmatrix`, `bmatrix`).
+    Matrix {
+        /// Matrix environment name (e.g. `"pmatrix"`, `"bmatrix"`).
+        env: String,
+        /// Two-dimensional grid of cell contents formatted as strings.
+        rows: Vec<Vec<String>>,
+    },
+}
+
 /// Pure-Rust mathematical typesetter for formulas and matrices.
 pub struct MathRenderer;
 
@@ -140,9 +154,26 @@ impl MathRenderer {
         None
     }
 
-    /// Converts a matrix environment into semantic HTML table format
+    /// Converts a matrix environment into publication-grade HTML table format with vector bracket styling
     pub fn matrix_to_html(env: &str, rows: &[Vec<String>]) -> String {
-        let mut html = format!("<table class=\"math-matrix {env}\"><tbody>");
+        let (left_cls, right_cls) = match env {
+            "pmatrix" => ("mat-p-l", "mat-p-r"),
+            "bmatrix" => ("mat-b-l", "mat-b-r"),
+            "Bmatrix" => ("mat-B-l", "mat-B-r"),
+            "vmatrix" => ("mat-v-l", "mat-v-r"),
+            "Vmatrix" => ("mat-V-l", "mat-V-r"),
+            _ => ("", ""),
+        };
+
+        let mut html = format!("<table class=\"math-matrix-outer {env}\"><tbody><tr>");
+
+        // Left bracket delimiter cell
+        if !left_cls.is_empty() {
+            html.push_str(&format!("<td class=\"mat-bracket-l {left_cls}\">&#160;</td>"));
+        }
+
+        // Inner table containing matrix rows and cells
+        html.push_str("<td class=\"mat-body\"><table class=\"math-matrix-inner\"><tbody>");
         for row in rows {
             html.push_str("<tr>");
             for cell in row {
@@ -151,7 +182,14 @@ impl MathRenderer {
             }
             html.push_str("</tr>");
         }
-        html.push_str("</tbody></table>");
+        html.push_str("</tbody></table></td>");
+
+        // Right bracket delimiter cell
+        if !right_cls.is_empty() {
+            html.push_str(&format!("<td class=\"mat-bracket-r {right_cls}\">&#160;</td>"));
+        }
+
+        html.push_str("</tr></tbody></table>");
         html
     }
 
@@ -529,23 +567,101 @@ impl MathRenderer {
         let mut out = text.to_string();
 
         while let Some((start_idx, end_idx, env, rows)) = Self::parse_matrix_environment(&out) {
-            let mut formatted_rows = Vec::new();
+            let num_rows = rows.len();
+            if num_rows == 0 {
+                out.replace_range(start_idx..end_idx, "");
+                continue;
+            }
 
-            for r_cells in rows {
-                let cells: Vec<String> = r_cells
+            // Translate cells and compute column count & max widths
+            let mut translated_rows: Vec<Vec<String>> = Vec::new();
+            let mut num_cols = 0;
+            for r in &rows {
+                let row_cells: Vec<String> = r
                     .iter()
                     .map(|c| Self::translate_math_symbols(c.trim()))
                     .collect();
-                let row_content = cells.join("   ");
+                num_cols = num_cols.max(row_cells.len());
+                translated_rows.push(row_cells);
+            }
 
-                let (left, right) = match env.as_str() {
-                    "pmatrix" => ("( ", " )"),
-                    "bmatrix" => ("[ ", " ]"),
-                    "Bmatrix" => ("{ ", " }"),
-                    "Vmatrix" => ("‖ ", " ‖"),
-                    "vmatrix" => ("| ", " |"),
-                    "smallmatrix" => ("[", "]"),
-                    _ => ("| ", " |"),
+            let mut col_widths = vec![0; num_cols];
+            for row in &translated_rows {
+                for (col_idx, cell) in row.iter().enumerate() {
+                    let w = cell.chars().count();
+                    col_widths[col_idx] = col_widths[col_idx].max(w);
+                }
+            }
+
+            // Build aligned rows
+            let mut aligned_rows: Vec<String> = Vec::new();
+            for row in &translated_rows {
+                let mut row_str = String::new();
+                for (col_idx, cell) in row.iter().enumerate() {
+                    let pad = col_widths[col_idx].saturating_sub(cell.chars().count());
+                    let left_pad = pad / 2;
+                    let right_pad = pad - left_pad;
+                    if col_idx > 0 {
+                        row_str.push_str("   ");
+                    }
+                    for _ in 0..left_pad {
+                        row_str.push(' ');
+                    }
+                    row_str.push_str(cell);
+                    for _ in 0..right_pad {
+                        row_str.push(' ');
+                    }
+                }
+                aligned_rows.push(row_str);
+            }
+
+            // Apply proper multi-line brackets
+            let mut formatted_rows = Vec::new();
+            for (idx, row_content) in aligned_rows.iter().enumerate() {
+                let (left, right) = if num_rows == 1 {
+                    match env.as_str() {
+                        "pmatrix" => ("( ", " )"),
+                        "bmatrix" => ("[ ", " ]"),
+                        "Bmatrix" => ("{ ", " }"),
+                        "vmatrix" => ("| ", " |"),
+                        "Vmatrix" => ("‖ ", " ‖"),
+                        "smallmatrix" => ("[", "]"),
+                        "matrix" => ("  ", "  "),
+                        _ => ("| ", " |"),
+                    }
+                } else if idx == 0 {
+                    // Top row
+                    match env.as_str() {
+                        "pmatrix" => ("⎛ ", " ⎞"),
+                        "bmatrix" => ("⎡ ", " ⎤"),
+                        "Bmatrix" => ("⎧ ", " ⎫"),
+                        "vmatrix" => ("│ ", " │"),
+                        "Vmatrix" => ("║ ", " ║"),
+                        "matrix" => ("  ", "  "),
+                        _ => ("│ ", " │"),
+                    }
+                } else if idx == num_rows - 1 {
+                    // Bottom row
+                    match env.as_str() {
+                        "pmatrix" => ("⎝ ", " ⎠"),
+                        "bmatrix" => ("⎣ ", " ⎦"),
+                        "Bmatrix" => ("⎩ ", " ⎭"),
+                        "vmatrix" => ("│ ", " │"),
+                        "Vmatrix" => ("║ ", " ║"),
+                        "matrix" => ("  ", "  "),
+                        _ => ("│ ", " │"),
+                    }
+                } else {
+                    // Middle rows
+                    match env.as_str() {
+                        "pmatrix" => ("⎜ ", " ⎟"),
+                        "bmatrix" => ("⎢ ", " ⎥"),
+                        "Bmatrix" => ("⎨ ", " ⎬"),
+                        "vmatrix" => ("│ ", " │"),
+                        "Vmatrix" => ("║ ", " ║"),
+                        "matrix" => ("  ", "  "),
+                        _ => ("│ ", " │"),
+                    }
                 };
 
                 formatted_rows.push(format!("{left}{row_content}{right}"));
@@ -743,6 +859,23 @@ impl MathRenderer {
         Self::format_scripts(&text)
     }
 
+    /// Splits formula text into alternating text and matrix segments
+    pub fn split_into_segments(mut text: &str) -> Vec<MathSegment> {
+        let mut segments = Vec::new();
+        while let Some((start, end, env, rows)) = Self::parse_matrix_environment(text) {
+            let prefix = &text[..start];
+            if !prefix.trim().is_empty() {
+                segments.push(MathSegment::Text(prefix.to_string()));
+            }
+            segments.push(MathSegment::Matrix { env, rows });
+            text = &text[end..];
+        }
+        if !text.trim().is_empty() {
+            segments.push(MathSegment::Text(text.to_string()));
+        }
+        segments
+    }
+
     /// Renders a display equation centered with optional equation number
     pub fn render_equation_block(
         ui: &mut Ui,
@@ -759,79 +892,118 @@ impl MathRenderer {
         ui.horizontal(|ui| {
             ui.add_space(28.0);
 
-            if let Some((start, end, env, rows)) = Self::parse_matrix_environment(formula) {
-                let prefix = formula[..start].trim();
-                let suffix = formula[end..].trim();
-
-                if !prefix.is_empty() {
-                    let clean_prefix = Self::translate_math_symbols(prefix);
-                    ui.label(
-                        egui::RichText::new(clean_prefix)
-                            .font(FontId::proportional(14.0))
-                            .color(text_color),
-                    );
-                }
-
-                // Render matrix in egui with proper left/right brackets and aligned cells
-                let (bracket_left, bracket_right) = match env.as_str() {
-                    "pmatrix" => ("(", ")"),
-                    "bmatrix" => ("[", "]"),
-                    "Bmatrix" => ("{", "}"),
-                    "vmatrix" => ("|", "|"),
-                    "Vmatrix" => ("‖", "‖"),
-                    _ => ("[", "]"),
-                };
-
-                let row_count = rows.len();
-
-                // Left delimiter
-                ui.label(
-                    egui::RichText::new(bracket_left)
-                        .font(FontId::proportional(if row_count > 1 { 22.0 } else { 15.0 }))
-                        .color(text_color),
-                );
-
-                egui::Grid::new(format!("egui_matrix_{}_{:p}", env, formula))
-                    .spacing(egui::vec2(16.0, 6.0))
-                    .show(ui, |ui| {
-                        for row in &rows {
-                            for cell in row {
-                                ui.vertical_centered(|ui| {
-                                    let clean_cell = Self::translate_math_symbols(cell);
-                                    ui.label(
-                                        egui::RichText::new(clean_cell)
-                                            .font(FontId::proportional(13.0))
-                                            .italics()
-                                            .color(text_color),
-                                    );
-                                });
-                            }
-                            ui.end_row();
-                        }
-                    });
-
-                // Right delimiter
-                ui.label(
-                    egui::RichText::new(bracket_right)
-                        .font(FontId::proportional(if row_count > 1 { 22.0 } else { 15.0 }))
-                        .color(text_color),
-                );
-
-                if !suffix.is_empty() {
-                    let clean_suffix = Self::translate_math_symbols(suffix);
-                    ui.label(
-                        egui::RichText::new(clean_suffix)
-                            .font(FontId::proportional(14.0))
-                            .color(text_color),
-                    );
-                }
-            } else {
+            let segments = Self::split_into_segments(formula);
+            if segments.is_empty() {
                 let clean_formula = Self::translate_math_symbols(formula);
                 ui.label(
                     egui::RichText::new(&clean_formula)
                         .font(FontId::proportional(14.5))
                         .color(text_color),
                 );
+            } else {
+                for (seg_idx, segment) in segments.iter().enumerate() {
+                    match segment {
+                        MathSegment::Text(t) => {
+                            let clean = Self::translate_math_symbols(t);
+                            ui.label(
+                                egui::RichText::new(clean)
+                                    .font(FontId::proportional(14.0))
+                                    .color(text_color),
+                            );
+                        }
+                        MathSegment::Matrix { env, rows } => {
+                            let grid_id = egui::Id::new(format!("egui_mat_grid_{seg_idx}_{:p}", rows));
+                            let mut grid_rect = None;
+
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                let grid_resp = egui::Grid::new(grid_id)
+                                    .spacing(egui::vec2(14.0, 5.0))
+                                    .show(ui, |ui| {
+                                        for row in rows {
+                                            for cell in row {
+                                                ui.vertical_centered(|ui| {
+                                                    let clean_cell = Self::translate_math_symbols(cell);
+                                                    ui.label(
+                                                        egui::RichText::new(clean_cell)
+                                                            .font(FontId::proportional(13.0))
+                                                            .italics()
+                                                            .color(text_color),
+                                                    );
+                                                });
+                                            }
+                                            ui.end_row();
+                                        }
+                                    });
+                                grid_rect = Some(grid_resp.response.rect);
+                                ui.add_space(8.0);
+                            });
+
+                            if let Some(rect) = grid_rect {
+                                let painter = ui.painter();
+                                let stroke = egui::Stroke::new(1.4_f32, text_color);
+                                let top_y = rect.top() - 2.0;
+                                let bot_y = rect.bottom() + 2.0;
+                                let left_x = rect.left() - 5.0;
+                                let right_x = rect.right() + 5.0;
+                                let cap = 5.0;
+
+                                match env.as_str() {
+                                    "bmatrix" => {
+                                        painter.line_segment([egui::pos2(left_x + cap, top_y), egui::pos2(left_x, top_y)], stroke);
+                                        painter.line_segment([egui::pos2(left_x, top_y), egui::pos2(left_x, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(left_x, bot_y), egui::pos2(left_x + cap, bot_y)], stroke);
+
+                                        painter.line_segment([egui::pos2(right_x - cap, top_y), egui::pos2(right_x, top_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x, top_y), egui::pos2(right_x, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x, bot_y), egui::pos2(right_x - cap, bot_y)], stroke);
+                                    }
+                                    "pmatrix" => {
+                                        let mid_y = (top_y + bot_y) * 0.5;
+                                        let arc_samples = 8;
+                                        for i in 0..arc_samples {
+                                            let t0 = i as f32 / arc_samples as f32;
+                                            let t1 = (i + 1) as f32 / arc_samples as f32;
+                                            let eval_left = |t: f32| -> egui::Pos2 {
+                                                let u = 1.0 - t;
+                                                let x = u * u * (left_x + 2.0) + 2.0 * u * t * (left_x - 3.0) + t * t * (left_x + 2.0);
+                                                let y = u * u * top_y + 2.0 * u * t * mid_y + t * t * bot_y;
+                                                egui::pos2(x, y)
+                                            };
+                                            painter.line_segment([eval_left(t0), eval_left(t1)], stroke);
+
+                                            let eval_right = |t: f32| -> egui::Pos2 {
+                                                let u = 1.0 - t;
+                                                let x = u * u * (right_x - 2.0) + 2.0 * u * t * (right_x + 3.0) + t * t * (right_x - 2.0);
+                                                let y = u * u * top_y + 2.0 * u * t * mid_y + t * t * bot_y;
+                                                egui::pos2(x, y)
+                                            };
+                                            painter.line_segment([eval_right(t0), eval_right(t1)], stroke);
+                                        }
+                                    }
+                                    "vmatrix" => {
+                                        painter.line_segment([egui::pos2(left_x, top_y), egui::pos2(left_x, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x, top_y), egui::pos2(right_x, bot_y)], stroke);
+                                    }
+                                    "Vmatrix" => {
+                                        painter.line_segment([egui::pos2(left_x - 1.5, top_y), egui::pos2(left_x - 1.5, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(left_x + 1.5, top_y), egui::pos2(left_x + 1.5, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x - 1.5, top_y), egui::pos2(right_x - 1.5, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x + 1.5, top_y), egui::pos2(right_x + 1.5, bot_y)], stroke);
+                                    }
+                                    "Bmatrix" => {
+                                        let mid_y = (top_y + bot_y) * 0.5;
+                                        painter.line_segment([egui::pos2(left_x, top_y), egui::pos2(left_x, bot_y)], stroke);
+                                        painter.circle_filled(egui::pos2(left_x - 2.0, mid_y), 1.5, text_color);
+                                        painter.line_segment([egui::pos2(right_x, top_y), egui::pos2(right_x, bot_y)], stroke);
+                                        painter.circle_filled(egui::pos2(right_x + 2.0, mid_y), 1.5, text_color);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if let Some(num) = number {

@@ -24,6 +24,8 @@ pub struct CompileTask {
     pub engine: EngineKind,
     /// Optional working directory for resolving images, inputs, and relative assets
     pub work_dir: Option<PathBuf>,
+    /// Optional document file name used to name the output PDF
+    pub doc_name: Option<String>,
     /// Creation instant used for debouncing
     pub timestamp: Instant,
 }
@@ -71,10 +73,11 @@ impl CompilerWorker {
                         let current_task = pending_task.take().unwrap();
                         is_busy_worker.store(true, Ordering::SeqCst);
 
-                        let result = CompilerEngine::compile(
+                        let result = CompilerEngine::compile_named(
                             &current_task.source,
                             current_task.engine,
                             current_task.work_dir.as_deref(),
+                            current_task.doc_name.as_deref(),
                         )
                         .map_err(|e| e.to_string());
 
@@ -121,12 +124,24 @@ impl CompilerWorker {
         engine: EngineKind,
         work_dir: Option<PathBuf>,
     ) -> u64 {
+        self.submit_named(source, engine, work_dir, None)
+    }
+
+    /// Submits LaTeX code with document filename for compilation (debounced). Returns the assigned task ID.
+    pub fn submit_named(
+        &self,
+        source: String,
+        engine: EngineKind,
+        work_dir: Option<PathBuf>,
+        doc_name: Option<String>,
+    ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let task = CompileTask {
             id,
             source,
             engine,
             work_dir,
+            doc_name,
             timestamp: Instant::now(),
         };
         let _ = self.task_sender.send(task);

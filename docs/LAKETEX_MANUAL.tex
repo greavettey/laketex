@@ -241,6 +241,10 @@ Laketex includes a headless mode for continuous integration, scripting, and remo
 \texttt{Ctrl + S} & Save Document to Disk \\
 \texttt{Ctrl + O} & Open \LaTeX\ File Dialog \\
 \texttt{Ctrl + N} & Create New Document \\
+\texttt{Ctrl + F} & Find in Editor (Search, Next/Prev, Case, Whole Word) \\
+\texttt{Ctrl + H} & Find and Replace in Editor (Replace, Replace All) \\
+\texttt{Ctrl + P} & Working Directory \& Project Files Manager \\
+\texttt{Ctrl + ,} & Open Settings \& Preferences (Rebindable) \\
 \texttt{Ctrl + =} / \texttt{Ctrl + +} & Zoom In Preview \\
 \texttt{Ctrl + -} & Zoom Out Preview \\
 \texttt{Double-Click Preview} & SyncTeX: Jump to Source Code Line \\
@@ -250,6 +254,16 @@ Laketex includes a headless mode for continuous integration, scripting, and remo
 \caption{Laketex keyboard shortcuts.}
 \label{tab:shortcuts}
 \end{table}
+
+\section{Settings \& Preferences}
+
+Laketex provides a centralized Preferences dialog accessible via \texttt{Ctrl + ,} or the \textbf{⚙ Settings} button in the toolbar. All preferences are automatically persisted to \texttt{laketex\_config.json} alongside \texttt{laketex.exe}:
+\begin{itemize}
+    \item \textbf{Appearance \& Themes}: Choose default color themes (Dracula JetBrains, Slate Blue, Nord Frost, Paper White, or any custom theme in \texttt{themes/}) and customize the editor font size.
+    \item \textbf{PDF \& Viewer Modes}: Set the default color grading (\textit{Daylight White}, \textit{Academic Dark Inverted}, or \textit{Sepia Eye-Care Parchment}) and target raster resolution (\textit{800px Compact}, \textit{1200px Standard}, \textit{1600px Retina}, \textit{2000px Ultra HD}).
+    \item \textbf{Keyboard Rebinds}: Click any action's shortcut button and press your preferred key combination to rebind core commands instantly.
+    \item \textbf{Compiler Defaults}: Choose your default typesetting engine (\textit{Native Pure-Rust}, \textit{Tectonic}, \textit{pdfLaTeX}, \textit{XeLaTeX}, \textit{LuaLaTeX}) and toggle auto-compilation on edit.
+\end{itemize}
 
 \section{In-App Documentation Access}
 

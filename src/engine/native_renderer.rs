@@ -7,38 +7,59 @@
 use crate::engine::ast::*;
 use crate::engine::layout::{ElementKind, TypesetPage};
 use crate::engine::math::MathRenderer;
+use crate::viewer::PdfColorMode;
 use egui::{vec2, Color32, FontId, Rect, RichText, Stroke, Ui};
 
 /// Direct vector canvas renderer for native typeset pages.
 pub struct NativePageRenderer;
 
 impl NativePageRenderer {
-    /// Renders a typeset page onto the UI canvas.
-    ///
-    /// Returns `Some(source_line)` if the user double-clicked an element on this page,
-    /// triggering backward SyncTeX navigation.
+    /// Renders a typeset page onto the UI canvas with boolean dark flag.
     pub fn render_page_ui(
         ui: &mut Ui,
         page: &TypesetPage,
         is_dark: bool,
         zoom: f32,
     ) -> Option<usize> {
+        let mode = if is_dark {
+            PdfColorMode::AcademicDark
+        } else {
+            PdfColorMode::Normal
+        };
+        Self::render_page_ui_with_mode(ui, page, mode, zoom)
+    }
+
+    /// Renders a typeset page onto the UI canvas supporting Normal, Dark, and Sepia modes.
+    ///
+    /// Returns `Some(source_line)` if the user double-clicked an element on this page,
+    /// triggering backward SyncTeX navigation.
+    pub fn render_page_ui_with_mode(
+        ui: &mut Ui,
+        page: &TypesetPage,
+        color_mode: PdfColorMode,
+        zoom: f32,
+    ) -> Option<usize> {
         let display_width = page.width * zoom;
         let display_height = page.height * zoom;
 
-        let (paper_bg, text_color, line_color) = if is_dark {
-            (
+        let (paper_bg, text_color, line_color) = match color_mode {
+            PdfColorMode::AcademicDark => (
                 Color32::from_rgb(26, 29, 36),
                 Color32::from_rgb(225, 230, 240),
                 Color32::from_rgb(60, 68, 85),
-            )
-        } else {
-            (
+            ),
+            PdfColorMode::Sepia => (
+                Color32::from_rgb(248, 241, 227),
+                Color32::from_rgb(60, 48, 38),
+                Color32::from_rgb(210, 195, 175),
+            ),
+            PdfColorMode::Normal => (
                 Color32::from_rgb(255, 255, 255),
                 Color32::from_rgb(20, 24, 32),
                 Color32::from_rgb(215, 220, 230),
-            )
+            ),
         };
+        let is_dark = color_mode.is_dark();
 
         let mut double_clicked_line = None;
 
@@ -206,33 +227,44 @@ impl NativePageRenderer {
                             ui.vertical_centered(|ui| {
                                 egui::Frame::new()
                                     .fill(if is_dark {
-                                        Color32::from_rgb(34, 38, 48)
+                                        Color32::from_rgb(32, 36, 44)
                                     } else {
-                                        Color32::from_rgb(245, 247, 250)
+                                        Color32::from_rgb(248, 250, 252)
                                     })
                                     .stroke(Stroke::new(1.0_f32, line_color))
                                     .corner_radius(4.0)
-                                    .inner_margin(egui::Margin::symmetric(16, 12))
+                                    .inner_margin(egui::Margin::symmetric(20, 14))
                                     .show(ui, |ui| {
-                                        let img_label = image_path.as_deref().unwrap_or("Graphic Object");
-                                        ui.label(
-                                            RichText::new(format!("📷 [{img_label}]"))
-                                                .font(FontId::proportional(11.0 * zoom))
-                                                .color(Color32::from_gray(130)),
-                                        );
+                                        let img_label = image_path.as_deref().unwrap_or("Graphic Placeholder");
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new("🖼").size(13.0 * zoom));
+                                            ui.label(
+                                                RichText::new(format!("[ {img_label} ]"))
+                                                    .font(FontId::monospace(10.5 * zoom))
+                                                    .color(if is_dark {
+                                                        Color32::from_rgb(180, 200, 225)
+                                                    } else {
+                                                        Color32::from_rgb(70, 85, 105)
+                                                    }),
+                                            );
+                                        });
                                     });
 
-                                let cap_text = caption.as_deref().unwrap_or("Figure");
-                                ui.add_space(4.0 * zoom);
-                                ui.label(
-                                    RichText::new(format!("Figure {number}: {cap_text}"))
-                                        .font(FontId::proportional(10.5 * zoom))
-                                        .italics()
-                                        .color(text_color),
-                                );
+                                if let Some(cap_text) = caption.as_deref() {
+                                    if !cap_text.is_empty() {
+                                        ui.add_space(4.0 * zoom);
+                                        ui.label(
+                                            RichText::new(format!("Figure {number}: {cap_text}"))
+                                                .font(FontId::proportional(10.5 * zoom))
+                                                .italics()
+                                                .color(text_color),
+                                        );
+                                    }
+                                }
                             });
                         }
                         ElementKind::CodeBlock { language, code } => {
+                            let line_tokens_list = crate::engine::syntax::SyntaxHighlighter::tokenize_for_ui(code, language, is_dark);
                             egui::Frame::new()
                                 .fill(if is_dark {
                                     Color32::from_rgb(30, 33, 42)
@@ -252,15 +284,24 @@ impl NativePageRenderer {
                                             );
                                         });
                                     }
-                                    ui.label(
-                                        RichText::new(code)
-                                            .font(FontId::monospace(10.0 * zoom))
-                                            .color(if is_dark {
-                                                Color32::from_rgb(220, 230, 245)
-                                            } else {
-                                                Color32::from_rgb(36, 41, 47)
-                                            }),
-                                    );
+                                    ui.vertical(|ui| {
+                                        for line_tokens in line_tokens_list {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                                                if line_tokens.is_empty() {
+                                                    ui.label(RichText::new(" ").font(FontId::monospace(10.0 * zoom)));
+                                                } else {
+                                                    for (token_text, token_color) in line_tokens {
+                                                        ui.label(
+                                                            RichText::new(token_text)
+                                                                .font(FontId::monospace(10.0 * zoom))
+                                                                .color(token_color),
+                                                        );
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
                                 });
                         }
                         ElementKind::Space(amt) => {

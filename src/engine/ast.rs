@@ -93,6 +93,40 @@ pub enum InlineSpan {
     Cite(String),
 }
 
+impl InlineSpan {
+    /// Returns the text content of the inline span
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(t)
+            | Self::Bold(t)
+            | Self::Italic(t)
+            | Self::Code(t)
+            | Self::Math(t)
+            | Self::Colored(_, t)
+            | Self::Url(t)
+            | Self::Ref(t)
+            | Self::Cite(t) => t.as_str(),
+        }
+    }
+}
+
+/// Horizontal column alignment within a tabular layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColumnAlign {
+    /// Left-aligned column (`l` specifier).
+    Left,
+    /// Centered column (`c` specifier).
+    Center,
+    /// Right-aligned column (`r` specifier).
+    Right,
+}
+
+impl Default for ColumnAlign {
+    fn default() -> Self {
+        Self::Left
+    }
+}
+
 /// A row in a LaTeX tabular environment.
 #[derive(Debug, Clone)]
 pub struct TableRow {
@@ -132,6 +166,8 @@ pub enum DocumentBlock {
     Paragraph {
         /// Paragraph content spans
         spans: Vec<InlineSpan>,
+        /// Whether paragraph indentation is suppressed (e.g. \noindent)
+        is_noindent: bool,
         /// Source line where paragraph began
         line: usize,
     },
@@ -176,6 +212,8 @@ pub enum DocumentBlock {
         rows: Vec<TableRow>,
         /// Whether booktabs rules (\toprule, \midrule, \bottomrule) are applied
         has_booktabs: bool,
+        /// Column alignments parsed from tabular specifier
+        alignments: Vec<ColumnAlign>,
         /// Source line number
         line: usize,
     },
@@ -206,6 +244,37 @@ pub enum DocumentBlock {
         /// Source line number
         line: usize,
     },
+    /// Centered content environment (`\begin{center}`)
+    CenteredBlock {
+        /// Content spans
+        spans: Vec<InlineSpan>,
+        /// Source line number
+        line: usize,
+    },
+    /// Blockquote environment (`\begin{quote}`)
+    QuoteBlock {
+        /// Content spans
+        spans: Vec<InlineSpan>,
+        /// Source line number
+        line: usize,
+    },
+    /// Table of Contents directive (`\tableofcontents`)
+    TableOfContents {
+        /// Source line number
+        line: usize,
+    },
+    /// Explicit page break (`\newpage` or `\clearpage`)
+    PageBreak {
+        /// Source line number
+        line: usize,
+    },
+    /// Explicit vertical space (`\vspace{...}`)
+    VerticalSpace {
+        /// Height in typographic points
+        pt: f32,
+        /// Source line number
+        line: usize,
+    },
 }
 
 impl DocumentBlock {
@@ -222,7 +291,12 @@ impl DocumentBlock {
             | Self::Table { line, .. }
             | Self::Figure { line, .. }
             | Self::CodeBlock { line, .. }
-            | Self::HorizontalRule { line } => *line,
+            | Self::HorizontalRule { line }
+            | Self::CenteredBlock { line, .. }
+            | Self::QuoteBlock { line, .. }
+            | Self::TableOfContents { line }
+            | Self::PageBreak { line }
+            | Self::VerticalSpace { line, .. } => *line,
         }
     }
 }

@@ -20,12 +20,19 @@ use std::time::{Duration, Instant, SystemTime};
 /// Classification of file types within a LaTeX project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectFileType {
+    /// Directory or subfolder.
     Directory,
+    /// LaTeX source files (`.tex`, `.ltx`, `.sty`, `.cls`).
     Tex,
+    /// Image and graphic assets (`.png`, `.jpg`, `.jpeg`, `.pdf`, `.eps`, `.svg`).
     Image,
+    /// BibTeX/BibLaTeX bibliography databases (`.bib`).
     Bib,
+    /// Configuration, package stylesheets, or document class definitions.
     StyleOrConfig,
+    /// Tabular or external data files (`.csv`, `.tsv`, `.dat`, `.json`).
     Data,
+    /// Miscellaneous unclassified project assets.
     Other,
 }
 
@@ -136,15 +143,24 @@ pub enum ProjectAction {
     OpenTexFile(PathBuf),
     /// Insert an `\includegraphics` figure environment at the cursor
     InsertIncludeGraphics {
+        /// Relative path from the working directory to the target image file.
         relative_path: String,
+        /// LaTeX reference label for cross-referencing (e.g. `fig:diagram`).
         label: String,
     },
     /// Insert an `\input{...}` statement at the cursor
-    InsertInput { relative_path: String },
+    InsertInput {
+        /// Relative path from the working directory to the referenced `.tex` file.
+        relative_path: String,
+    },
     /// Copy text (e.g. snippet or relative path) to clipboard
     CopyToClipboard(String),
     /// Active working directory was changed by user
     WorkingDirChanged(PathBuf),
+    /// Set a file as the project's Master/Root Document for compilation
+    SetMasterDocument(PathBuf),
+    /// Cleared the Master Document (compiles active buffer instead)
+    ClearMasterDocument,
 }
 
 /// Internal UI interaction intents collected during tree traversal.
@@ -158,6 +174,8 @@ enum UiIntent {
     PromptRename(PathBuf, String),
     PromptDelete(PathBuf),
     ImportInto(PathBuf),
+    SetMaster(PathBuf),
+    ClearMaster,
 }
 
 /// Overleaf-style Working Directory and Project Files Manager.
@@ -174,15 +192,20 @@ pub struct ProjectManager {
     pub target_folder: PathBuf,
     /// State: New File dialog input bar open
     pub new_file_open: bool,
+    /// Pending filename input for newly created files
     pub new_file_name: String,
     /// State: New Folder dialog input bar open
     pub new_folder_open: bool,
+    /// Pending folder name input for newly created directories
     pub new_folder_name: String,
     /// State: Rename target item
     pub rename_target: Option<PathBuf>,
+    /// Pending new name for the item currently being renamed
     pub rename_new_name: String,
     /// State: Delete confirmation item
     pub delete_target: Option<PathBuf>,
+    /// Optional designated Master / Root Document for compilation
+    pub master_document: Option<PathBuf>,
     /// Temporary feedback notification
     pub status_message: Option<(String, Instant)>,
 }
@@ -205,16 +228,39 @@ impl ProjectManager {
             rename_target: None,
             rename_new_name: String::new(),
             delete_target: None,
+            master_document: None,
             status_message: None,
         };
+        mgr.auto_detect_master_document();
         mgr.refresh();
         mgr
+    }
+
+    /// Automatically detects a candidate master document (e.g. `main.tex`, `document.tex`) in the root directory.
+    pub fn auto_detect_master_document(&mut self) {
+        if let Some(ref m) = self.master_document {
+            if m.is_file() {
+                return;
+            }
+        }
+        for candidate in &["main.tex", "document.tex", "thesis.tex", "paper.tex", "index.tex"] {
+            let p = self.root_dir.join(candidate);
+            if p.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    if content.contains("\\documentclass") {
+                        self.master_document = Some(p);
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// Sets a new project root directory and rescans its contents.
     pub fn set_root_dir(&mut self, new_root: PathBuf) {
         self.root_dir = new_root.clone();
         self.target_folder = new_root;
+        self.auto_detect_master_document();
         self.refresh();
         self.set_status(format!("Working directory: {}", self.root_dir.display()));
     }
@@ -793,7 +839,7 @@ Write your section content here.
                     });
                 } else {
                     for node in &self.root_nodes {
-                        Self::render_node(ui, node, 0, &query, active_file, &mut intents);
+                        Self::render_node(ui, node, 0, &query, active_file, self.master_document.as_deref(), &mut intents);
                     }
                 }
             });
@@ -836,6 +882,16 @@ Write your section content here.
                     self.target_folder = path;
                     let _ = self.import_files_dialog();
                 }
+                UiIntent::SetMaster(path) => {
+                    self.master_document = Some(path.clone());
+                    self.set_status(format!("Set master: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                    project_action = ProjectAction::SetMasterDocument(path);
+                }
+                UiIntent::ClearMaster => {
+                    self.master_document = None;
+                    self.set_status("Master document cleared");
+                    project_action = ProjectAction::ClearMasterDocument;
+                }
             }
         }
 
@@ -876,6 +932,7 @@ Write your section content here.
         depth: usize,
         query: &str,
         active_file: Option<&Path>,
+        master_file: Option<&Path>,
         intents: &mut Vec<UiIntent>,
     ) {
         if !query.is_empty() && !node.contains_match(query) {
@@ -976,6 +1033,25 @@ Write your section content here.
 
                     match node.file_type {
                         ProjectFileType::Tex => {
+                            let is_master = master_file.map_or(false, |m| m == node.path);
+                            if is_master {
+                                if ui
+                                    .small_button(RichText::new("👑 Master").color(Color32::from_rgb(229, 192, 123)).strong())
+                                    .on_hover_text("Root Master Document for compilation. Click to unset.")
+                                    .clicked()
+                                {
+                                    intents.push(UiIntent::ClearMaster);
+                                }
+                            } else {
+                                if ui
+                                    .small_button("👑 Set Master")
+                                    .on_hover_text("Set this file as Master/Root Document for project compilation")
+                                    .clicked()
+                                {
+                                    intents.push(UiIntent::SetMaster(node.path.clone()));
+                                }
+                            }
+
                             if !is_active
                                 && ui
                                     .small_button("📖 Open")
@@ -1043,7 +1119,7 @@ Write your section content here.
         // Recursively render expanded directory children
         if node.file_type == ProjectFileType::Directory && node.is_expanded {
             for child in &node.children {
-                Self::render_node(ui, child, depth + 1, query, active_file, intents);
+                Self::render_node(ui, child, depth + 1, query, active_file, master_file, intents);
             }
         }
     }

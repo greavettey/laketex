@@ -18,6 +18,7 @@ use std::path::PathBuf;
     version = "0.1.0"
 )]
 pub struct CliArgs {
+    /// Optional headless CLI subcommand to execute instead of launching the desktop GUI.
     #[command(subcommand)]
     pub command: Option<Commands>,
 
@@ -33,13 +34,16 @@ pub struct CliArgs {
     pub api_port: u16,
 }
 
+/// Headless CLI subcommands supported by Laketex.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Launch the headless REST API server
     Serve {
+        /// Host IP address to bind to (e.g. `"127.0.0.1"`).
         #[arg(short, long, default_value = "127.0.0.1")]
         host: String,
 
+        /// Network port to listen on.
         #[arg(short, long, default_value_t = 3030)]
         port: u16,
     },
@@ -161,6 +165,7 @@ pub enum Commands {
 }
 
 impl CliArgs {
+    /// Dispatches and executes the specified headless CLI subcommand, returning any execution errors.
     pub fn execute_subcommand(cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
         match cmd {
             Commands::Serve { host, port } => {
@@ -492,8 +497,10 @@ impl CliArgs {
                 if format.to_lowercase() == "json" {
                     println!("{}", report.to_json());
                 } else {
-                    print!("{}", report.to_text_summary());
+                    println!("{}", report.to_text_summary());
                 }
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
 
                 if report.error_count > 0 {
                     std::process::exit(1);

@@ -62,6 +62,8 @@ impl Drawer {
         Self::default()
     }
 
+    /// Renders the bottom expandable console drawer displaying compiler diagnostics,
+    /// contextual error reports, raw TeX logs, and the intelligent render audit debugger.
     pub fn show(
         &mut self,
         ui: &mut Ui,

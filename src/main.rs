@@ -13,12 +13,29 @@ use std::sync::atomic::Ordering;
 
 #[cfg(windows)]
 fn attach_parent_console() {
-    const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
     extern "system" {
         fn AttachConsole(dwProcessId: u32) -> i32;
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn SetStdHandle(nStdHandle: u32, hHandle: *mut std::ffi::c_void) -> i32;
     }
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5;
+    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4;
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as _;
+
     unsafe {
-        AttachConsole(ATTACH_PARENT_PROCESS);
+        let stdout_h = GetStdHandle(STD_OUTPUT_HANDLE);
+        if stdout_h.is_null() || stdout_h == INVALID_HANDLE_VALUE {
+            if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+                use std::fs::OpenOptions;
+                use std::os::windows::io::IntoRawHandle;
+                if let Ok(file) = OpenOptions::new().write(true).open("CONOUT$") {
+                    let handle = file.into_raw_handle();
+                    SetStdHandle(STD_OUTPUT_HANDLE, handle as _);
+                    SetStdHandle(STD_ERROR_HANDLE, handle as _);
+                }
+            }
+        }
     }
 }
 

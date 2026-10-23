@@ -40,7 +40,7 @@ impl EngineKind {
     /// Returns the human-readable display label shown in UI selectors
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Native => "Native Rust (Zero-Install, Instant)",
+            Self::Native => "LakeTex",
             Self::Tectonic => "Tectonic (Auto-CTAN)",
             Self::PdfLatex => "pdfLaTeX",
             Self::XeLatex => "XeLaTeX",
@@ -220,7 +220,27 @@ impl CompilerEngine {
         kind: EngineKind,
         work_dir: Option<&Path>,
     ) -> Result<CompileResult> {
+        Self::compile_named(source, kind, work_dir, None)
+    }
+
+    /// Compiles LaTeX source code to PDF using the specified engine backend,
+    /// with an optional working directory and document file name.
+    pub fn compile_named(
+        source: &str,
+        kind: EngineKind,
+        work_dir: Option<&Path>,
+        doc_name: Option<&str>,
+    ) -> Result<CompileResult> {
         let start = Instant::now();
+
+        let clean_stem = doc_name
+            .map(Path::new)
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty() && *s != "untitled")
+            .unwrap_or("laketex_doc");
+
+        let is_untitled = clean_stem == "laketex_doc";
 
         // 1. Handle Native Pure-Rust Engine
         if kind == EngineKind::Native {
@@ -230,6 +250,12 @@ impl CompilerEngine {
             match NativePdfExporter::export_to_pdf_bytes(&ast) {
                 Ok(bytes) => {
                     let duration_ms = start.elapsed().as_millis();
+                    if let Some(p) = work_dir {
+                        if !is_untitled {
+                            let target_pdf = p.join(format!("{clean_stem}.pdf"));
+                            let _ = std::fs::write(&target_pdf, &bytes);
+                        }
+                    }
                     return Ok(CompileResult {
                         success: true,
                         pdf_bytes: Some(bytes),
@@ -264,24 +290,61 @@ impl CompilerEngine {
         }
 
         // 2. Handle External CLI Engines (Tectonic, pdfLaTeX, XeLaTeX, LuaLaTeX)
-        let engine_path = Self::find_engine_path(kind).ok_or_else(|| {
-            LakeTexError::EngineNotFound(format!(
-                "{} not found in PATH or Laketex bin directory",
-                kind.display_name()
-            ))
-        })?;
+        let engine_path = match Self::find_engine_path(kind) {
+            Some(p) => p,
+            None if kind == EngineKind::Tectonic => {
+                match crate::compiler::provisioner::Provisioner::provision_tectonic(|_, _| {}) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return Err(LakeTexError::EngineNotFound(format!(
+                            "{} not found and automated download failed",
+                            kind.display_name()
+                        )));
+                    }
+                }
+            }
+            None => {
+                return Err(LakeTexError::EngineNotFound(format!(
+                    "{} not found in PATH or Laketex bin directory",
+                    kind.display_name()
+                )));
+            }
+        };
 
-        // Create a temporary workspace if no working directory provided or if empty
+        // Create a temporary workspace if no working directory provided or if document is untitled
         let temp_dir = tempfile::tempdir().map_err(LakeTexError::Io)?;
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-        let run_dir: &Path = match work_dir {
-            Some(p) if !p.as_os_str().is_empty() => p,
-            _ => &cwd,
+        let abs_run_dir = match work_dir {
+            Some(p) if !p.as_os_str().is_empty() && !is_untitled => {
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    cwd.join(p).canonicalize().unwrap_or_else(|_| cwd.join(p))
+                }
+            }
+            _ => temp_dir.path().to_path_buf(),
+        };
+        let run_dir = &abs_run_dir;
+
+        let compile_stem = if is_untitled {
+            "laketex_doc".to_string()
+        } else {
+            format!(".laketex_{clean_stem}")
         };
 
-        let tex_file_path = run_dir.join("laketex_doc.tex");
-        let pdf_file_path = run_dir.join("laketex_doc.pdf");
+        let tex_file_path = abs_run_dir.join(format!("{compile_stem}.tex"));
+        let pdf_file_path = abs_run_dir.join(format!("{compile_stem}.pdf"));
+        let final_pdf_path = abs_run_dir.join(format!("{clean_stem}.pdf"));
+
+        let clean_intermediates = |dir: &Path, stem: &str| {
+            for ext in &[
+                "aux", "log", "out", "xdv", "aex", "toc", "nav", "snm", "bbl", "blg", "fls",
+                "fdb_latexmk", "synctex.gz",
+            ] {
+                let _ = std::fs::remove_file(dir.join(format!("{stem}.{ext}")));
+            }
+        };
 
         // Clean up any pre-existing files to prevent picking up stale PDFs from prior runs
         let _ = std::fs::remove_file(&pdf_file_path);
@@ -294,8 +357,25 @@ impl CompilerEngine {
             && source.contains("minted")
             && !source.contains("\\PassOptionsToPackage{draft}{minted}");
 
-        let effective_source = if pre_draft_minted {
-            format!("\\PassOptionsToPackage{{draft}}{{minted}}\n{source}")
+        // If pictures are referenced via \includegraphics that do not exist on disk,
+        // pre-inject draft mode for graphicx so the compiler defaults to inserting
+        // a filepath placeholder box instead of failing compilation (like Overleaf)
+        let missing_graphics = Self::detect_missing_graphics(source, &abs_run_dir);
+        let pre_draft_graphics = !missing_graphics.is_empty()
+            && (source.contains("\\includegraphics") || source.contains("graphicx"))
+            && !source.contains("\\PassOptionsToPackage{draft}{graphicx}")
+            && !source.contains("[draft]");
+
+        let mut pre_injections = Vec::new();
+        if pre_draft_minted {
+            pre_injections.push("\\PassOptionsToPackage{draft}{minted}");
+        }
+        if pre_draft_graphics {
+            pre_injections.push("\\PassOptionsToPackage{draft}{graphicx}\n\\makeatletter\\AtBeginDocument{\\@ifundefined{Gin@nat@width}{}{\\setkeys{Gin}{natwidth=100,natheight=100}}}\\makeatother");
+        }
+
+        let effective_source = if !pre_injections.is_empty() {
+            format!("{}\n{source}", pre_injections.join("\n"))
         } else {
             source.to_string()
         };
@@ -303,7 +383,7 @@ impl CompilerEngine {
         std::fs::write(&tex_file_path, &effective_source).map_err(LakeTexError::Io)?;
 
         let mut cmd = crate::create_hidden_command(&engine_path);
-        cmd.current_dir(run_dir);
+        cmd.current_dir(&abs_run_dir);
 
         match kind {
             EngineKind::Tectonic => {
@@ -312,14 +392,14 @@ impl CompilerEngine {
                     .arg("-Z")
                     .arg("continue-on-errors")
                     .arg("--outdir")
-                    .arg(run_dir)
+                    .arg(&abs_run_dir)
                     .arg(&tex_file_path);
             }
             EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
                 cmd.arg("-interaction=nonstopmode")
                     .arg("-shell-escape")
                     .arg("-output-directory")
-                    .arg(run_dir)
+                    .arg(&abs_run_dir)
                     .arg(&tex_file_path);
             }
             EngineKind::Native => unreachable!(),
@@ -333,22 +413,44 @@ impl CompilerEngine {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        // If compilation failed specifically due to minted / shell-escape / pygments, attempt draft fallback
+        // If compilation failed specifically due to minted or missing pictures, attempt draft fallback
         let combined_log = format!("{stdout}\n{stderr}");
         let is_minted_failure = (!output.status.success()
             || !pdf_file_path.exists()
             || combined_log.contains("failed to execute the shell-escape command")
             || combined_log.contains("Package minted Error"))
             && source.contains("minted")
-            && !source.contains("\\PassOptionsToPackage{draft}{minted}");
+            && !source.contains("\\PassOptionsToPackage{draft}{minted}")
+            && !pre_draft_minted;
 
-        if is_minted_failure {
-            let fallback_source = format!("\\PassOptionsToPackage{{draft}}{{minted}}\n{source}");
+        let is_graphics_failure = (!output.status.success()
+            || !pdf_file_path.exists()
+            || combined_log.contains("Unable to load picture")
+            || combined_log.contains("Image inclusion failed")
+            || combined_log.contains("the xdvipdfmx engine had an unrecoverable error")
+            || combined_log.contains("pdftex.def Error: File")
+            || (combined_log.contains("LaTeX Error: File") && combined_log.contains("not found"))
+            || (combined_log.contains("File `") && combined_log.contains("not found"))
+            || (combined_log.contains("File '") && combined_log.contains("not found"))
+            || combined_log.contains("Cannot find file"))
+            && (source.contains("\\includegraphics") || source.contains("graphicx"))
+            && !source.contains("\\PassOptionsToPackage{draft}{graphicx}")
+            && !pre_draft_graphics;
+
+        if is_minted_failure || is_graphics_failure {
+            let mut retry_prefixes = Vec::new();
+            if is_minted_failure || pre_draft_minted {
+                retry_prefixes.push("\\PassOptionsToPackage{draft}{minted}");
+            }
+            if is_graphics_failure || pre_draft_graphics {
+                retry_prefixes.push("\\PassOptionsToPackage{draft}{graphicx}\n\\makeatletter\\AtBeginDocument{\\@ifundefined{Gin@nat@width}{}{\\setkeys{Gin}{natwidth=100,natheight=100}}}\\makeatother");
+            }
+            let fallback_source = format!("{}\n{source}", retry_prefixes.join("\n"));
             let _ = std::fs::write(&tex_file_path, &fallback_source);
             let _ = std::fs::remove_file(&pdf_file_path);
 
             let mut retry_cmd = crate::create_hidden_command(&engine_path);
-            retry_cmd.current_dir(run_dir);
+            retry_cmd.current_dir(&abs_run_dir);
             match kind {
                 EngineKind::Tectonic => {
                     retry_cmd
@@ -357,7 +459,7 @@ impl CompilerEngine {
                         .arg("-Z")
                         .arg("continue-on-errors")
                         .arg("--outdir")
-                        .arg(run_dir)
+                        .arg(&abs_run_dir)
                         .arg(&tex_file_path);
                 }
                 EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
@@ -365,7 +467,7 @@ impl CompilerEngine {
                         .arg("-interaction=nonstopmode")
                         .arg("-shell-escape")
                         .arg("-output-directory")
-                        .arg(run_dir)
+                        .arg(&abs_run_dir)
                         .arg(&tex_file_path);
                 }
                 _ => {}
@@ -383,25 +485,63 @@ impl CompilerEngine {
                 let retry_pdf = retry_pdf.filter(|b| b.len() >= 50 && b.starts_with(b"%PDF-"));
                 let retry_has_no_pages = retry_combined.contains("No pages of output");
 
-                if retry_output.status.success() && retry_pdf.is_some() && !retry_has_no_pages {
+                if retry_pdf.is_some() && !retry_has_no_pages {
                     let mut retry_diags = DiagnosticParser::parse(&retry_combined);
-                    retry_diags.retain(|d| d.severity != crate::compiler::diagnostic::DiagnosticSeverity::Error);
-                    retry_diags.push(Diagnostic {
-                        severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
-                        message: "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string(),
-                        line: None,
-                        file: None,
-                        details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{minted}'".to_string()),
-                    });
+
+                    if is_graphics_failure || pre_draft_graphics {
+                        let missing_pics = Self::extract_missing_pictures_from_log(&retry_combined);
+                        let missing_desc = if !missing_pics.is_empty() {
+                            format!(" [{}]", missing_pics.join(", "))
+                        } else if !missing_graphics.is_empty() {
+                            format!(" [{}]", missing_graphics.join(", "))
+                        } else {
+                            String::new()
+                        };
+
+                        retry_diags.retain(|d| {
+                            !d.message.contains("Unable to load picture")
+                                && !d.message.contains("Image inclusion failed")
+                                && !d.message.contains("the xdvipdfmx engine had an unrecoverable error")
+                                && !d.message.contains("something bad happened inside xdvipdfmx")
+                                && !d.message.contains("File `")
+                                && !d.message.contains("Cannot find file")
+                                && !d.message.contains("Division by 0")
+                        });
+
+                        retry_diags.push(Diagnostic {
+                            severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
+                            message: format!("Missing picture(s){missing_desc} replaced with filepath placeholder box (Overleaf-style draft mode). Place the image file in your project folder to render the full graphic."),
+                            line: None,
+                            file: None,
+                            details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{graphicx}'".to_string()),
+                        });
+                    }
+
+                    if is_minted_failure || pre_draft_minted {
+                        retry_diags.retain(|d| d.severity != crate::compiler::diagnostic::DiagnosticSeverity::Error);
+                        retry_diags.push(Diagnostic {
+                            severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
+                            message: "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string(),
+                            line: None,
+                            file: None,
+                            details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{minted}'".to_string()),
+                        });
+                    }
+
+                    if retry_pdf.is_some() && !is_untitled {
+                        if pdf_file_path.exists() && pdf_file_path != final_pdf_path {
+                            let _ = std::fs::copy(&pdf_file_path, &final_pdf_path);
+                        }
+                    }
 
                     let _ = std::fs::remove_file(&tex_file_path);
-                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.aux"));
-                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.log"));
-                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.out"));
-                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.xdv"));
-                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.aex"));
+                    let _ = std::fs::remove_file(&pdf_file_path);
+                    clean_intermediates(run_dir, &compile_stem);
+                    clean_intermediates(run_dir, clean_stem);
+                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.tex"));
+                    let _ = std::fs::remove_file(run_dir.join("laketex_doc.pdf"));
                     if run_dir == temp_dir.path() {
-                        let _ = std::fs::remove_file(&pdf_file_path);
+                        let _ = std::fs::remove_file(&final_pdf_path);
                     }
 
                     return Ok(CompileResult {
@@ -461,26 +601,84 @@ impl CompilerEngine {
 
         let raw_pdf = if pdf_file_path.exists() {
             std::fs::read(&pdf_file_path).ok()
+        } else if final_pdf_path.exists() {
+            std::fs::read(&final_pdf_path).ok()
         } else {
             None
         };
         let pdf_bytes = raw_pdf.filter(|b| b.len() >= 50 && b.starts_with(b"%PDF-"));
 
+        if pdf_bytes.is_some() && !is_untitled {
+            if pdf_file_path.exists() && pdf_file_path != final_pdf_path {
+                let _ = std::fs::copy(&pdf_file_path, &final_pdf_path);
+            }
+        }
+
         let _ = std::fs::remove_file(&tex_file_path);
-        let _ = std::fs::remove_file(run_dir.join("laketex_doc.aux"));
-        let _ = std::fs::remove_file(run_dir.join("laketex_doc.log"));
-        let _ = std::fs::remove_file(run_dir.join("laketex_doc.out"));
-        let _ = std::fs::remove_file(run_dir.join("laketex_doc.xdv"));
-        let _ = std::fs::remove_file(run_dir.join("laketex_doc.aex"));
+        let _ = std::fs::remove_file(&pdf_file_path);
+        clean_intermediates(run_dir, &compile_stem);
+        clean_intermediates(run_dir, clean_stem);
+        let _ = std::fs::remove_file(run_dir.join("laketex_doc.tex"));
+        let _ = std::fs::remove_file(run_dir.join("laketex_doc.pdf"));
         if run_dir == temp_dir.path() {
-            let _ = std::fs::remove_file(&pdf_file_path);
+            let _ = std::fs::remove_file(&final_pdf_path);
         }
 
         let has_no_pages = combined_log.contains("No pages of output");
-        let has_errors = diagnostics
-            .iter()
-            .any(|d| d.severity == crate::compiler::diagnostic::DiagnosticSeverity::Error);
-        let success = output.status.success() && pdf_bytes.is_some() && !has_errors && !has_no_pages;
+        let only_missing_pic_errors = !diagnostics.is_empty()
+            && diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::compiler::diagnostic::DiagnosticSeverity::Error)
+                .all(|d| {
+                    d.message.contains("Unable to load picture")
+                        || d.message.contains("Image inclusion failed")
+                        || d.message.contains("the xdvipdfmx engine had an unrecoverable error")
+                        || d.message.contains("something bad happened inside xdvipdfmx")
+                        || (d.message.contains("File") && d.message.contains("not found"))
+                        || d.message.contains("Cannot find file")
+                        || d.message.contains("Division by 0")
+                });
+
+        let is_draft_active = pre_draft_graphics || source.contains("draft");
+        let has_errors = if only_missing_pic_errors && is_draft_active {
+            diagnostics.retain(|d| {
+                !d.message.contains("Unable to load picture")
+                    && !d.message.contains("Image inclusion failed")
+                    && !d.message.contains("the xdvipdfmx engine had an unrecoverable error")
+                    && !d.message.contains("something bad happened inside xdvipdfmx")
+                    && !d.message.contains("File `")
+                    && !d.message.contains("Cannot find file")
+                    && !d.message.contains("Division by 0")
+                    && !d.message.contains("Division by 0")
+            });
+            let missing_names = if !missing_graphics.is_empty() {
+                missing_graphics.join(", ")
+            } else {
+                Self::extract_missing_pictures_from_log(&combined_log).join(", ")
+            };
+            let missing_desc = if !missing_names.is_empty() {
+                format!(" [{missing_names}]")
+            } else {
+                String::new()
+            };
+            diagnostics.push(Diagnostic {
+                severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
+                message: format!("Missing picture(s){missing_desc} replaced with filepath placeholder box (Overleaf-style draft mode). Place the image file in your project folder to render the full graphic."),
+                line: None,
+                file: None,
+                details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{graphicx}'".to_string()),
+            });
+            false
+        } else {
+            diagnostics
+                .iter()
+                .any(|d| d.severity == crate::compiler::diagnostic::DiagnosticSeverity::Error)
+        };
+
+        let success = (output.status.success() || (only_missing_pic_errors && is_draft_active))
+            && pdf_bytes.is_some()
+            && !has_errors
+            && !has_no_pages;
 
         if pre_draft_minted && success {
             diagnostics.retain(|d| d.severity != crate::compiler::diagnostic::DiagnosticSeverity::Error);
@@ -493,6 +691,32 @@ impl CompilerEngine {
             });
         }
 
+        if pre_draft_graphics && success {
+            diagnostics.retain(|d| {
+                !d.message.contains("Unable to load picture")
+                    && !d.message.contains("Image inclusion failed")
+                    && !d.message.contains("the xdvipdfmx engine had an unrecoverable error")
+                    && !d.message.contains("something bad happened inside xdvipdfmx")
+                    && !d.message.contains("File `")
+                    && !d.message.contains("Cannot find file")
+                    && !d.message.contains("Division by 0")
+            });
+            let missing_desc = if !missing_graphics.is_empty() {
+                format!(" [{}]", missing_graphics.join(", "))
+            } else {
+                String::new()
+            };
+            if !diagnostics.iter().any(|d| d.message.contains("Missing picture(s)")) {
+                diagnostics.push(Diagnostic {
+                    severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
+                    message: format!("Missing picture(s){missing_desc} replaced with filepath placeholder box (Overleaf-style draft mode). Place the image file in your project folder to render the full graphic."),
+                    line: None,
+                    file: None,
+                    details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{graphicx}'".to_string()),
+                });
+            }
+        }
+
         Ok(CompileResult {
             success,
             pdf_bytes: if success { pdf_bytes } else { None },
@@ -501,5 +725,109 @@ impl CompilerEngine {
             diagnostics,
             duration_ms,
         })
+    }
+
+    /// Extracts a list of referenced graphic paths from `\includegraphics` commands in the LaTeX source.
+    pub fn extract_graphic_paths(source: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut search_idx = 0;
+        while let Some(pos) = source[search_idx..].find("\\includegraphics") {
+            let abs_pos = search_idx + pos;
+            let rest = &source[abs_pos + "\\includegraphics".len()..];
+            search_idx = abs_pos + "\\includegraphics".len();
+
+            let mut slice = rest.trim_start_matches('*').trim_start();
+            if slice.starts_with('[') {
+                if let Some(bracket_end) = slice.find(']') {
+                    slice = slice[bracket_end + 1..].trim_start();
+                }
+            }
+            if slice.starts_with('{') {
+                if let Some(end) = slice.find('}') {
+                    let path_str = slice[1..end].trim();
+                    if !path_str.is_empty() && !paths.contains(&path_str.to_string()) {
+                        paths.push(path_str.to_string());
+                    }
+                }
+            }
+        }
+        paths
+    }
+
+    /// Checks whether a referenced graphic file exists on disk, probing relative directories and standard extensions.
+    pub fn check_graphic_exists(path_str: &str, run_dir: &std::path::Path) -> bool {
+        let clean_path = path_str.trim().replace('\\', "/");
+        if clean_path.is_empty() {
+            return false;
+        }
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let search_roots = [run_dir, &cwd];
+
+        let extensions = ["", ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".PNG", ".JPG", ".JPEG", ".PDF"];
+        let subfolders = ["", "images/", "figures/", "img/", "plots/", "assets/"];
+
+        for root in &search_roots {
+            for sub in &subfolders {
+                for ext in &extensions {
+                    let candidate = if clean_path.ends_with(ext) && !ext.is_empty() {
+                        root.join(sub).join(&clean_path)
+                    } else {
+                        root.join(sub).join(format!("{clean_path}{ext}"))
+                    };
+                    if candidate.is_file() {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Returns a list of graphic files referenced in `\includegraphics` that are missing from disk.
+    pub fn detect_missing_graphics(source: &str, run_dir: &std::path::Path) -> Vec<String> {
+        let all_paths = Self::extract_graphic_paths(source);
+        all_paths
+            .into_iter()
+            .filter(|p| !Self::check_graphic_exists(p, run_dir))
+            .collect()
+    }
+
+    /// Extracts filenames of missing pictures from compiler standard error / stdout logs.
+    pub fn extract_missing_pictures_from_log(log: &str) -> Vec<String> {
+        let mut missing = Vec::new();
+        for line in log.lines() {
+            if line.contains("Unable to load picture or PDF file") {
+                if let Some(start) = line.find('\'') {
+                    if let Some(end) = line[start + 1..].find('\'') {
+                        let name = line[start + 1..start + 1 + end].trim();
+                        if !name.is_empty() && !missing.contains(&name.to_string()) {
+                            missing.push(name.to_string());
+                        }
+                    }
+                }
+            } else if line.contains("Image inclusion failed for") {
+                if let Some(start) = line.find('"') {
+                    if let Some(end) = line[start + 1..].find('"') {
+                        let name = line[start + 1..start + 1 + end].trim();
+                        if !name.is_empty() && !missing.contains(&name.to_string()) {
+                            missing.push(name.to_string());
+                        }
+                    }
+                }
+            } else if line.contains("not found") && (line.contains("File `") || line.contains("File '")) {
+                let quote_char = if line.contains("File `") { '`' } else { '\'' };
+                if let Some(start) = line.find(quote_char) {
+                    if let Some(end) = line[start + 1..].find('\'') {
+                        let name = line[start + 1..start + 1 + end].trim();
+                        if !name.is_empty() && !missing.contains(&name.to_string()) {
+                            missing.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        missing
     }
 }

@@ -10,7 +10,8 @@
 
 use crate::compiler::engine::EngineKind;
 use crate::document::{BuiltinDoc, BuiltinDocKind};
-use crate::ui::theme::ThemeConfig;
+use crate::t;
+use crate::viewer::PdfColorMode;
 use egui::{vec2, Color32, RichText, Ui};
 
 /// Actions triggered by toolbar buttons during an application frame.
@@ -28,6 +29,8 @@ pub struct ToolbarAction {
     pub save_as_requested: bool,
     /// True if the user clicked Project Files or pressed Ctrl+P
     pub project_files_requested: bool,
+    /// True if the user clicked Settings or pressed Ctrl+,
+    pub settings_requested: bool,
     /// User requested to load a built-in documentation manual into the editor
     pub load_builtin_doc: Option<BuiltinDocKind>,
 }
@@ -46,11 +49,9 @@ impl Toolbar {
         auto_compile: &mut bool,
         show_sidebar: &mut bool,
         show_drawer: &mut bool,
-        invert_pdf: &mut bool,
+        color_mode: &mut PdfColorMode,
         fit_width: &mut bool,
         zoom: &mut f32,
-        current_theme: &mut ThemeConfig,
-        available_themes: &[ThemeConfig],
     ) -> ToolbarAction {
         let mut action = ToolbarAction::default();
 
@@ -69,17 +70,17 @@ impl Toolbar {
             ui.separator();
 
             // File controls
-            if ui.button("+ New").clicked() {
+            if ui.button(t!("toolbar.new_file")).clicked() {
                 action.new_requested = true;
             }
-            if ui.button("Open").clicked() {
+            if ui.button(t!("toolbar.open_file")).clicked() {
                 action.open_requested = true;
             }
-            if ui.button("Save").clicked() {
+            if ui.button(t!("toolbar.save_file")).clicked() {
                 action.save_requested = true;
             }
             if ui
-                .button("📁 Files (Ctrl+P)")
+                .button(format!("{} (Ctrl+P)", t!("toolbar.files")))
                 .on_hover_text("Open Overleaf-style Working Directory & Project Files Manager (Ctrl+P)")
                 .clicked()
             {
@@ -87,7 +88,7 @@ impl Toolbar {
             }
 
             // Built-in LaTeX Documentation Menu
-            ui.menu_button("📖 Docs", |ui| {
+            ui.menu_button(t!("toolbar.docs"), |ui| {
                 ui.set_min_width(240.0);
                 ui.label(RichText::new("LaTeX Documentation Library").strong());
                 ui.label(
@@ -113,9 +114,9 @@ impl Toolbar {
 
             // Compile button
             let compile_btn_text = if is_compiling {
-                RichText::new("Compiling...").color(Color32::from_rgb(242, 201, 76))
+                RichText::new(t!("toolbar.compiling")).color(Color32::from_rgb(242, 201, 76))
             } else {
-                RichText::new("▶ Compile (Ctrl+B)")
+                RichText::new(format!("{} (Ctrl+B)", t!("toolbar.compile")))
                     .strong()
                     .color(Color32::WHITE)
             };
@@ -172,26 +173,35 @@ impl Toolbar {
                 *zoom = (*zoom + 0.15).min(4.0);
                 *fit_width = false;
             }
-            if ui.selectable_label(*fit_width, "Fit Width").clicked() {
+            if ui.selectable_label(*fit_width, t!("toolbar.fit_width")).clicked() {
                 *fit_width = !*fit_width;
             }
 
-            if ui.selectable_label(*invert_pdf, "Dark Mode").clicked() {
-                *invert_pdf = !*invert_pdf;
+            let color_btn_text = match *color_mode {
+                PdfColorMode::Normal => "☀ Day",
+                PdfColorMode::AcademicDark => "🌙 Dark",
+                PdfColorMode::Sepia => "📜 Sepia",
+            };
+            if ui
+                .button(color_btn_text)
+                .on_hover_text("Toggle PDF Color Mode (Daylight -> Academic Dark -> Sepia)")
+                .clicked()
+            {
+                *color_mode = match *color_mode {
+                    PdfColorMode::Normal => PdfColorMode::AcademicDark,
+                    PdfColorMode::AcademicDark => PdfColorMode::Sepia,
+                    PdfColorMode::Sepia => PdfColorMode::Normal,
+                };
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Theme selector supporting dynamic built-in and custom themes
-                egui::ComboBox::from_id_salt("theme_select")
-                    .selected_text(current_theme.name())
-                    .show_ui(ui, |ui| {
-                        for theme in available_themes {
-                            let is_selected = current_theme.name == theme.name;
-                            if ui.selectable_label(is_selected, theme.name()).clicked() {
-                                *current_theme = theme.clone();
-                            }
-                        }
-                    });
+                if ui
+                    .button(format!("{} (Ctrl+,)", t!("toolbar.settings")))
+                    .on_hover_text("Open Settings & Preferences (Theme, Shortcuts, PDF Defaults)")
+                    .clicked()
+                {
+                    action.settings_requested = true;
+                }
 
                 if ui.selectable_label(*show_drawer, "Console").clicked() {
                     *show_drawer = !*show_drawer;

@@ -42,15 +42,19 @@
 //!    - Batch CLI compilation, file watching, and visual parity comparisons ([`headless::cli`]).
 //!    - Headless HTTP REST API daemon ([`headless::server`]) exposing endpoints for automation.
 
+#![warn(missing_docs)]
+
 pub mod compiler;
 pub mod document;
 pub mod engine;
 pub mod error;
 pub mod headless;
+pub mod i18n;
 pub mod ui;
 pub mod viewer;
 
 pub use error::{LakeTexError, Result};
+pub use i18n::{current_locale, set_locale, tr, tr_args};
 
 /// Creates a standard `std::process::Command` configured with `CREATE_NO_WINDOW` on Windows
 /// to prevent console window popups when invoking external subprocesses.
@@ -63,3 +67,18 @@ pub fn create_hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::proc
     }
     cmd
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

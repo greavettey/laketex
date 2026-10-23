@@ -6,6 +6,7 @@
 
 use crate::engine::layout::TypesetPage;
 use crate::engine::native_renderer::NativePageRenderer;
+use crate::t;
 use crate::viewer::canvas::PdfCanvas;
 use crate::viewer::PdfRenderer;
 use egui::{Color32, RichText, ScrollArea, Ui};
@@ -38,6 +39,8 @@ pub enum ViewerAction {
 pub struct ViewerPanel;
 
 impl ViewerPanel {
+    /// Renders the right-hand document preview pane with zoom controls,
+    /// page jumping, color inversion, and interactive canvas rasterization.
     pub fn show(
         ui: &mut Ui,
         canvas: &mut PdfCanvas,
@@ -45,7 +48,7 @@ impl ViewerPanel {
         typeset_pages: &[TypesetPage],
         pdf_bytes: Option<&[u8]>,
         view_mode: &mut ViewMode,
-        is_dark: bool,
+        _is_dark: bool,
         has_syntax_errors: bool,
         total_document_lines: usize,
     ) -> ViewerAction {
@@ -61,8 +64,8 @@ impl ViewerPanel {
                 );
 
                 // View mode toggle: Native Vector (Pure Rust) vs PDF Engine
-                ui.selectable_value(view_mode, ViewMode::NativeVector, "Native Live View");
-                ui.selectable_value(view_mode, ViewMode::PdfRaster, "PDF Vector View");
+                ui.selectable_value(view_mode, ViewMode::NativeVector, t!("viewer.native_view"));
+                ui.selectable_value(view_mode, ViewMode::PdfRaster, t!("viewer.pdf_view"));
 
                 if has_syntax_errors {
                     ui.colored_label(
@@ -104,10 +107,10 @@ impl ViewerPanel {
                             .show(ui, |ui| {
                                 ui.vertical_centered(|ui| {
                                     ui.add_space(8.0);
-                                    if let Some(line) = NativePageRenderer::render_page_ui(
+                                    if let Some(line) = NativePageRenderer::render_page_ui_with_mode(
                                         ui,
                                         page,
-                                        is_dark,
+                                        canvas.color_mode,
                                         canvas.zoom,
                                     ) {
                                         action = ViewerAction::JumpToLine(line);

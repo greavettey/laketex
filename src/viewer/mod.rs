@@ -6,7 +6,10 @@
 //! harness ([`parity::VisualParityComparator`]).
 
 pub mod canvas;
+pub mod color_mode;
 pub mod parity;
+
+pub use color_mode::PdfColorMode;
 
 use crate::error::{LakeTexError, Result};
 use egui::ColorImage;
@@ -109,13 +112,13 @@ impl PdfRenderer {
         self.init_error.as_deref()
     }
 
-    /// Renders a specific page from PDF bytes to an `egui::ColorImage`.
-    pub fn render_page_to_color_image(
+    /// Renders a specific page from PDF bytes to an `egui::ColorImage` with a specific color mode.
+    pub fn render_page_to_color_image_with_mode(
         &self,
         pdf_bytes: &[u8],
         page_index: usize,
         target_width: u16,
-        invert_colors: bool,
+        color_mode: PdfColorMode,
     ) -> Result<(ColorImage, usize)> {
         let pdfium = self
             .pdfium
@@ -150,11 +153,27 @@ impl PdfRenderer {
 
         let mut rgba_img: RgbaImage = dynamic_img.to_rgba8();
 
-        if invert_colors {
-            for pixel in rgba_img.pixels_mut() {
-                pixel[0] = 255 - pixel[0];
-                pixel[1] = 255 - pixel[1];
-                pixel[2] = 255 - pixel[2];
+        match color_mode {
+            PdfColorMode::Normal => {}
+            PdfColorMode::AcademicDark => {
+                for pixel in rgba_img.pixels_mut() {
+                    pixel[0] = 255 - pixel[0];
+                    pixel[1] = 255 - pixel[1];
+                    pixel[2] = 255 - pixel[2];
+                }
+            }
+            PdfColorMode::Sepia => {
+                for pixel in rgba_img.pixels_mut() {
+                    let r = pixel[0] as f32;
+                    let g = pixel[1] as f32;
+                    let b = pixel[2] as f32;
+                    let tr = (0.393 * r + 0.769 * g + 0.189 * b).min(255.0);
+                    let tg = (0.349 * r + 0.686 * g + 0.168 * b).min(255.0);
+                    let tb = (0.272 * r + 0.534 * g + 0.131 * b).min(255.0);
+                    pixel[0] = tr as u8;
+                    pixel[1] = tg as u8;
+                    pixel[2] = tb as u8;
+                }
             }
         }
 
@@ -164,6 +183,22 @@ impl PdfRenderer {
 
         let color_image = ColorImage::from_rgba_unmultiplied([width, height], &pixels);
         Ok((color_image, page_count))
+    }
+
+    /// Renders a specific page from PDF bytes to an `egui::ColorImage`.
+    pub fn render_page_to_color_image(
+        &self,
+        pdf_bytes: &[u8],
+        page_index: usize,
+        target_width: u16,
+        invert_colors: bool,
+    ) -> Result<(ColorImage, usize)> {
+        let mode = if invert_colors {
+            PdfColorMode::AcademicDark
+        } else {
+            PdfColorMode::Normal
+        };
+        self.render_page_to_color_image_with_mode(pdf_bytes, page_index, target_width, mode)
     }
 }
 

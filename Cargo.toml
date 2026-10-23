@@ -33,9 +33,10 @@ rfd = "0.15"
 tempfile = "3.17"
 ureq = { version = "2.12", features = ["json"] }
 printpdf = "0.12.8"
+flate2 = "1.0"
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
