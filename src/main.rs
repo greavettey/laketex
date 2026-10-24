@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 
 #[cfg(windows)]
 fn attach_parent_console() {
-    extern "system" {
+    unsafe extern "system" {
         fn AttachConsole(dwProcessId: u32) -> i32;
         fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
         fn SetStdHandle(nStdHandle: u32, hHandle: *mut std::ffi::c_void) -> i32;

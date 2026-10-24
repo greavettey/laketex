@@ -954,7 +954,10 @@ impl PackageManager {
             if !cur_path.to_lowercase().contains(&dir_str.to_lowercase()) {
                 let sep = if cfg!(windows) { ";" } else { ":" };
                 let new_path = format!("{dir_str}{sep}{cur_path}");
-                std::env::set_var("PATH", new_path);
+                // SAFETY: Updating process PATH for external tool discovery.
+                unsafe {
+                    std::env::set_var("PATH", new_path);
+                }
             }
         }
     }
