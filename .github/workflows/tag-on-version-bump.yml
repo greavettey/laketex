@@ -1,0 +1,51 @@
+name: Auto-Tag on Version Bump
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'Cargo.toml'
+
+permissions:
+  contents: write
+
+jobs:
+  check-version-bump:
+    name: Check & Tag Version Bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with full tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Cargo.toml version
+        id: check_version
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists. No action required."
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version detected: $TAG (does not exist in git)."
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push release tag
+        if: steps.check_version.outputs.tag_exists == 'false'
+        shell: bash
+        run: |
+          TAG="${{ steps.check_version.outputs.tag }}"
+          VERSION="${{ steps.check_version.outputs.version }}"
+          echo "Tagging commit as $TAG..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
