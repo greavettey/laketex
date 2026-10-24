@@ -16,8 +16,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-const DEFAULT_EN_LOCALE: &str = include_str!("../../locales/en.json");
-const BUNDLED_ES_LOCALE: &str = include_str!("../../locales/es.json");
+const DEFAULT_EN_LOCALE: &str = include_str!("../locales/en.json");
+const DEFAULT_ES_LOCALE: &str = include_str!("../locales/es.json");
 
 /// Global thread-safe i18n manager instance.
 static I18N: LazyLock<RwLock<I18nCatalog>> = LazyLock::new(|| {
@@ -56,7 +56,7 @@ impl I18nCatalog {
     /// Loads built-in embedded localization catalogs.
     pub fn load_defaults(&mut self) {
         self.load_from_json_str("en", "English", DEFAULT_EN_LOCALE);
-        self.load_from_json_str("es", "Español", BUNDLED_ES_LOCALE);
+        self.load_from_json_str("es", "Español", DEFAULT_ES_LOCALE);
         self.active_language = "en".to_string();
     }
 

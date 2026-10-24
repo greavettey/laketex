@@ -109,19 +109,27 @@ impl ErrorReport {
 
         for diag in diagnostics {
             let line_num = diag.line;
-            let surrounding = if let Some(target_line) = line_num {
-                if target_line > 0 && target_line <= lines.len() {
-                    let target_idx = target_line - 1;
-                    let start_idx = target_idx.saturating_sub(3);
-                    let end_idx = (target_idx + 4).min(lines.len());
+            let is_main_doc = match &diag.file {
+                None => true,
+                Some(f) => f == document_name || f.starts_with(".laketex_") || f == "document.tex",
+            };
+            let surrounding = if is_main_doc {
+                if let Some(target_line) = line_num {
+                    if target_line > 0 && target_line <= lines.len() {
+                        let target_idx = target_line - 1;
+                        let start_idx = target_idx.saturating_sub(3);
+                        let end_idx = (target_idx + 4).min(lines.len());
 
-                    (start_idx..end_idx)
-                        .map(|idx| ContextLine {
-                            line_number: idx + 1,
-                            content: lines[idx].to_string(),
-                            is_target: idx == target_idx,
-                        })
-                        .collect()
+                        (start_idx..end_idx)
+                            .map(|idx| ContextLine {
+                                line_number: idx + 1,
+                                content: lines[idx].to_string(),
+                                is_target: idx == target_idx,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
                 } else {
                     Vec::new()
                 }

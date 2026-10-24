@@ -53,41 +53,45 @@ Laketex is a high-performance, lightweight, and fully portable $\LaTeX$ viewer a
 
 | Directory / Module | Lines of Code | Description |
 | :--- | :--- | :--- |
-| [`src/main.rs`](file:///c:/Users/Axel/Documents/antigravity/nifty-hertz/src/main.rs) | 35 LOC | CLI entry point, argument dispatcher, and GUI launcher |
-| [`src/lib.rs`](file:///c:/Users/Axel/Documents/antigravity/nifty-hertz/src/lib.rs) | 12 LOC | Library root exposing compiler, document, engine, headless, and viewer modules |
-| [`src/error.rs`](file:///c:/Users/Axel/Documents/antigravity/nifty-hertz/src/error.rs) | 38 LOC | Unified strongly-typed error hierarchy (`LakeTexError`) |
-| **`src/engine/`** | **1,340 LOC** | **In-house pure-Rust typesetting, AST, layout, and PDF engine** |
+| [`src/main.rs`](../src/main.rs) | 35 LOC | CLI entry point, argument dispatcher, and GUI launcher |
+| [`src/lib.rs`](../src/lib.rs) | 12 LOC | Library root exposing compiler, document, engine, headless, and viewer modules |
+| [`src/error.rs`](../src/error.rs) | 38 LOC | Unified strongly-typed error hierarchy (`LakeTexError`) |
+| **`src/engine/`** | **1,375 LOC** | **In-house pure-Rust typesetting, AST, layout, and PDF engine** |
+| `src/engine.rs` | 35 LOC | Engine subsystem root, re-exports, and public interfaces |
 | `src/engine/ast.rs` | 135 LOC | Typed AST for LaTeX documents with line tracking and paper sizes |
 | `src/engine/parser.rs` | 425 LOC | Fault-tolerant recursive descent parser designed for incomplete draft code |
 | `src/engine/math.rs` | 275 LOC | Arbitrarily nested fraction parser, matrix formatter, super/subscripts, AMS symbols |
 | `src/engine/layout.rs` | 280 LOC | Document paginator, A4/Letter margins, equation numbering, element bounding boxes |
 | `src/engine/native_renderer.rs` | 285 LOC | Instant vector canvas renderer and double-click hit tester |
 | `src/engine/pdf_exporter.rs` | 225 LOC | Vector PDF generator using `printpdf` with authentic academic styling |
-| **`src/ui/`** | **1,310 LOC** | **Reactive GUI layout, editor, viewer, and theme configuration** |
-| `src/ui/mod.rs` | 445 LOC | Application shell, event loop, toolbar/drawer orchestration, shortcut handlers |
+| **`src/ui/`** | **2,215 LOC** | **Reactive GUI layout, editor, viewer, and theme configuration** |
+| `src/ui.rs` | 1,350 LOC | Application shell, event loop, toolbar/drawer orchestration, shortcut handlers |
 | `src/ui/editor_panel.rs` | 175 LOC | Syntax-highlighted code editor, line number gutter, cursor range sync |
 | `src/ui/viewer_panel.rs` | 115 LOC | Dual-mode viewer selector, page navigator, and reverse SyncTeX dispatcher |
 | `src/ui/sidebar.rs` | 230 LOC | Document outline tree, package inspector, math snippet inserter |
 | `src/ui/drawer.rs` | 130 LOC | Collapsible diagnostic drawer and terminal stdout/stderr viewer |
 | `src/ui/toolbar.rs` | 135 LOC | Quick actions, compilation progress indicator, engine switcher |
 | `src/ui/theme.rs` | 160 LOC | System font fallback chain (`seguisym.ttf`, etc.) and typography styles |
-| **`src/compiler/`** | **641 LOC** | **Engine orchestration, worker threads, CTAN provisioning** |
+| **`src/compiler/`** | **666 LOC** | **Engine orchestration, worker threads, CTAN provisioning** |
+| `src/compiler.rs` | 25 LOC | Compiler module root, engine abstraction, and worker re-exports |
 | `src/compiler/engine.rs` | 266 LOC | Multi-engine runner (`Native`, `Tectonic`, `PdfLatex`, `XeLatex`, `LuaLatex`) |
 | `src/compiler/worker.rs` | 106 LOC | Background worker thread with debounced compile channel (180ms) |
 | `src/compiler/diagnostic.rs` | 156 LOC | Regex-based LaTeX/TeX log diagnostic parser (errors, warnings, underfull/overfull) |
 | `src/compiler/provisioner.rs` | 105 LOC | Package dependency resolution and CTAN metadata lookups |
 | **`src/document/`** | **634 LOC** | **Document buffer, syntax lexing, and package detection** |
+| `src/document.rs` | 110 LOC | In-memory document model with undo/redo buffer and file I/O |
 | `src/document/lexer.rs` | 215 LOC | Tokenizer and syntax highlighter for LaTeX commands, math, comments, braces |
 | `src/document/outline.rs` | 156 LOC | Section, subsection, equation, table, and label structural tree extractor |
 | `src/document/packages.rs` | 123 LOC | Automated `\usepackage` detector and non-destructive preamble injector |
-| `src/document/mod.rs` | 140 LOC | In-memory document model with undo/redo buffer and file I/O |
-| **`src/viewer/`** | **455 LOC** | **PDF canvas, PDFium integration, and visual parity comparator** |
+| **`src/viewer/`** | **513 LOC** | **PDF canvas, PDFium integration, and visual parity comparator** |
+| `src/viewer.rs` | 208 LOC | Embedded PDFium wrapper, rasterizer, and dynamic library binder |
 | `src/viewer/canvas.rs` | 200 LOC | High-DPI raster canvas with zoom, invert colors, and click coordinate mapping |
 | `src/viewer/parity.rs` | 165 LOC | Visual Parity Harness: dual-engine comparator, MSE/PSNR calculation, diff PNG generator |
-| `src/viewer/mod.rs` | 150 LOC | Embedded PDFium wrapper and dynamic library binder |
-| **`src/headless/`** | **380 LOC** | **CLI subcommands and HTTP REST daemon** |
+| **`src/headless/`** | **391 LOC** | **CLI subcommands and HTTP REST daemon** |
+| `src/headless.rs` | 11 LOC | Headless automation root, CLI entry points, and REST microservice re-exports |
 | `src/headless/server.rs` | 182 LOC | Lightweight REST API server daemon (`tiny_http` / JSON) |
 | `src/headless/cli.rs` | 194 LOC | Clap command parser: `serve`, `compile`, `check`, `outline`, `packages`, `compare` |
+| **`src/i18n.rs`** | **284 LOC** | **Internationalization catalog, translation macros, and locale loader** |
 | **`tests/`** | **150 LOC** | **Automated unit and integration test suites** |
 | `tests/document_tests.rs` | 145 LOC | Lexer, diagnostic parser, outline, packages, and compilation tests |
 | `tests/visual_parity_tests.rs` | 45 LOC | Automated visual parity benchmark between Tectonic and Native engines |
@@ -96,7 +100,7 @@ Laketex is a high-performance, lightweight, and fully portable $\LaTeX$ viewer a
 
 ## 3. Frontend Architecture
 
-### 3.1. Reactive Event Loop (`src/ui/mod.rs`)
+### 3.1. Reactive Event Loop (`src/ui.rs`)
 The graphical user interface is built on `eframe` and `egui` (immediate-mode GUI). Every frame:
 1. **Theme Resolution**: `AppTheme::apply(ctx)` dynamically ensures high contrast and resolves system typography fallback chains.
 2. **Channel Polling**: The main thread checks `self.compiler.try_receive()`. When background compilation finishes, diagnostics, durations, and PDF bytes are updated immediately without locking the thread.

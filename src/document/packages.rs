@@ -7,10 +7,10 @@
 
 use crate::error::{LakeTexError, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
-static CACHED_PYTHON_ENV: OnceLock<PythonEnvironment> = OnceLock::new();
+static CACHED_PYTHON_ENV: RwLock<Option<PythonEnvironment>> = RwLock::new(None);
 
 /// Static specification of a known LaTeX package external tool dependency.
 pub struct DependencySpec {
@@ -119,6 +119,9 @@ pub struct PythonEnvironment {
     pub python_path: Option<String>,
     /// Path to Python Scripts directory
     pub scripts_dir: Option<String>,
+    /// Path to user-level Python Scripts directory (e.g. for `pip install --user`)
+    #[serde(default)]
+    pub user_scripts_dir: Option<String>,
 }
 
 /// Metadata regarding a declared or detected CTAN package.
@@ -266,38 +269,105 @@ impl PackageManager {
         format!("\\usepackage{{{pkg_name}}}\n{source}")
     }
 
+    /// Invalidates the cached Python environment probe, forcing a refresh on next access.
+    pub fn invalidate_python_environment() {
+        if let Ok(mut lock) = CACHED_PYTHON_ENV.write() {
+            *lock = None;
+        }
+    }
+
     /// Probes the system Python environment and detects version, path, scripts directory, and pip.
     /// Results are cached statically to avoid spawning subprocesses repeatedly.
     pub fn check_python_environment() -> PythonEnvironment {
-        CACHED_PYTHON_ENV.get_or_init(Self::probe_python_environment).clone()
+        if let Ok(read) = CACHED_PYTHON_ENV.read() {
+            if let Some(env) = read.as_ref() {
+                return env.clone();
+            }
+        }
+        let probed = Self::probe_python_environment();
+        if let Ok(mut write) = CACHED_PYTHON_ENV.write() {
+            *write = Some(probed.clone());
+        }
+        probed
     }
 
     fn probe_python_environment() -> PythonEnvironment {
-        let candidates = if cfg!(windows) {
-            vec!["python", "py", "python3"]
+        let mut candidates: Vec<String> = if cfg!(windows) {
+            vec!["python".to_string(), "py".to_string(), "python3".to_string()]
         } else {
-            vec!["python3", "python"]
+            vec!["python3".to_string(), "python".to_string()]
         };
 
+        if cfg!(windows) {
+            let mut known_windows_locations = Vec::new();
+
+            if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                let up = PathBuf::from(&user_profile);
+                known_windows_locations.push(up.join("miniconda3").join("python.exe"));
+                known_windows_locations.push(up.join("anaconda3").join("python.exe"));
+            }
+            if let Ok(program_data) = std::env::var("ProgramData") {
+                let pd = PathBuf::from(&program_data);
+                known_windows_locations.push(pd.join("miniconda3").join("python.exe"));
+                known_windows_locations.push(pd.join("anaconda3").join("python.exe"));
+            }
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let py_programs = PathBuf::from(&local_app_data).join("Programs").join("Python");
+                if py_programs.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(py_programs) {
+                        for entry in entries.flatten() {
+                            let cand = entry.path().join("python.exe");
+                            if cand.is_file() {
+                                known_windows_locations.push(cand);
+                            }
+                        }
+                    }
+                }
+            }
+            for drive in ["C:\\Python313", "C:\\Python312", "C:\\Python311", "C:\\Python310", "C:\\Python39"] {
+                known_windows_locations.push(PathBuf::from(drive).join("python.exe"));
+            }
+
+            for loc in known_windows_locations {
+                if loc.is_file() {
+                    let s = loc.to_string_lossy().to_string();
+                    if !candidates.contains(&s) {
+                        candidates.push(s);
+                    }
+                }
+            }
+        }
+
         for candidate in candidates {
-            let output = crate::create_hidden_command(candidate)
-                .args(["-c", "import sys, sysconfig; print(sys.executable); print(sys.version.split()[0]); print(sysconfig.get_path('scripts'))"])
+            let output = crate::create_hidden_command(&candidate)
+                .args(["-c", "import sys, sysconfig, os, site; print(sys.executable); print(sys.version.split()[0]); print(sysconfig.get_path('scripts') or ''); ub = getattr(site, 'USER_BASE', ''); print(os.path.join(ub, 'Scripts' if os.name == 'nt' else 'bin') if ub else '')"])
                 .output();
 
             if let Ok(out) = output {
                 if out.status.success() {
                     let text = String::from_utf8_lossy(&out.stdout);
                     let mut lines = text.lines();
-                    let exe_path = lines.next().map(|s| s.trim().to_string());
-                    let ver = lines.next().map(|s| s.trim().to_string());
-                    let scripts = lines.next().map(|s| s.trim().to_string());
+                    let exe_path = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    let ver = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    let scripts = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    let user_scripts = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
                     // Check if pip is available with this interpreter
-                    let pip_status = crate::create_hidden_command(candidate)
+                    let pip_status = crate::create_hidden_command(&candidate)
                         .args(["-m", "pip", "--version"])
                         .output()
                         .map(|o| o.status.success())
                         .unwrap_or(false);
+
+                    if let Some(scripts_dir) = &scripts {
+                        Self::add_to_process_path(Path::new(scripts_dir));
+                    }
+                    if let Some(user_scripts_dir) = &user_scripts {
+                        let p = Path::new(user_scripts_dir);
+                        if p.is_dir() {
+                            Self::add_to_process_path(p);
+                        }
+                    }
 
                     return PythonEnvironment {
                         python_available: true,
@@ -305,6 +375,7 @@ impl PackageManager {
                         python_version: ver,
                         python_path: exe_path,
                         scripts_dir: scripts,
+                        user_scripts_dir: user_scripts,
                     };
                 }
             }
@@ -316,6 +387,7 @@ impl PackageManager {
             python_version: None,
             python_path: None,
             scripts_dir: None,
+            user_scripts_dir: None,
         }
     }
 
@@ -343,8 +415,8 @@ impl PackageManager {
 
         // 2. Check Python scripts directory
         let env = Self::check_python_environment();
-        if let Some(scripts_dir) = env.scripts_dir {
-            let scripts_path = PathBuf::from(&scripts_dir);
+        if let Some(scripts_dir) = &env.scripts_dir {
+            let scripts_path = PathBuf::from(scripts_dir);
             let candidate = scripts_path.join(&exe_name);
             if candidate.is_file() {
                 Self::add_to_process_path(&scripts_path);
@@ -352,7 +424,36 @@ impl PackageManager {
             }
         }
 
-        // 3. Check common Python scripts paths on Windows
+        // 3. Check Python user-level scripts directory (e.g. from pip install --user)
+        if let Some(user_scripts_dir) = &env.user_scripts_dir {
+            let user_scripts_path = PathBuf::from(user_scripts_dir);
+            let candidate = user_scripts_path.join(&exe_name);
+            if candidate.is_file() {
+                Self::add_to_process_path(&user_scripts_path);
+                return Some(candidate);
+            }
+        }
+
+        // 4. Check adjacent to detected Python executable
+        if let Some(py_path) = &env.python_path {
+            let py_buf = PathBuf::from(py_path);
+            if let Some(py_dir) = py_buf.parent() {
+                let scripts = py_dir.join("Scripts");
+                let candidate = scripts.join(&exe_name);
+                if candidate.is_file() {
+                    Self::add_to_process_path(&scripts);
+                    return Some(candidate);
+                }
+                let bin = py_dir.join("bin");
+                let cand_bin = bin.join(&exe_name);
+                if cand_bin.is_file() {
+                    Self::add_to_process_path(&bin);
+                    return Some(cand_bin);
+                }
+            }
+        }
+
+        // 5. Check common Python scripts paths on Windows
         if cfg!(windows) {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
                 let local_path = PathBuf::from(local_app_data).join("Programs").join("Python");
@@ -372,7 +473,14 @@ impl PackageManager {
             if let Ok(app_data) = std::env::var("APPDATA") {
                 let python_user_scripts = PathBuf::from(app_data).join("Python");
                 if python_user_scripts.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(python_user_scripts) {
+                    // Check directly inside APPDATA\Python\Scripts
+                    let direct_scripts = python_user_scripts.join("Scripts");
+                    let direct_cand = direct_scripts.join(&exe_name);
+                    if direct_cand.is_file() {
+                        Self::add_to_process_path(&direct_scripts);
+                        return Some(direct_cand);
+                    }
+                    if let Ok(entries) = std::fs::read_dir(&python_user_scripts) {
                         for entry in entries.flatten() {
                             let scripts = entry.path().join("Scripts");
                             let cand = scripts.join(&exe_name);
@@ -459,10 +567,55 @@ impl PackageManager {
     }
 
     /// Installs an external package dependency (e.g. Pygments for minted) with explicit user consent.
+    ///
+    /// # Arguments
+    /// * `dep_name` - Name or alias of the dependency (e.g. `"pygments"`, `"minted"`).
+    /// * `user_consented` - Boolean flag indicating that the end user has explicitly authorized the install.
+    ///
+    /// # Errors
+    /// Returns [`LakeTexError::Dependency`] if:
+    /// - User consent was not granted (`user_consented = false`)
+    /// - `dep_name` is not in the approved static [`KNOWN_DEPENDENCY_SPECS`] whitelist
+    /// - The registered pip package name fails character validation
+    /// - The Python interpreter or `pip` is unavailable
+    /// - `pip install` subprocess execution fails
+    ///
+    /// # Security Policy
+    /// Strictly limits installation targets to trusted, statically defined package specifications.
+    /// Arbitrary package names or command-line flags cannot be injected into the `pip` command.
     pub fn install_dependency(dep_name: &str, user_consented: bool) -> Result<String> {
         if !user_consented {
             return Err(LakeTexError::Dependency(format!(
                 "Installation of external dependency '{dep_name}' aborted: user consent was not granted."
+            )));
+        }
+
+        // Whitelist validation: only allow pre-registered, known dependencies
+        let spec = KNOWN_DEPENDENCY_SPECS
+            .iter()
+            .find(|s| {
+                s.pip_package == Some(dep_name)
+                    || s.latex_package == dep_name
+                    || s.binary_name == dep_name
+                    || s.name.eq_ignore_ascii_case(dep_name)
+            })
+            .ok_or_else(|| {
+                LakeTexError::Dependency(format!(
+                    "Security policy violation: '{dep_name}' is not in the approved package registry."
+                ))
+            })?;
+
+        let pip_pkg = spec.pip_package.ok_or_else(|| {
+            LakeTexError::Dependency(format!(
+                "Dependency '{}' cannot be installed via pip (install command: {})",
+                spec.name, spec.install_command
+            ))
+        })?;
+
+        // Strict character verification (prevent flag injection or arbitrary pip arguments)
+        if !pip_pkg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Err(LakeTexError::Dependency(format!(
+                "Security policy violation: package name '{pip_pkg}' contains illegal characters."
             )));
         }
 
@@ -481,17 +634,42 @@ impl PackageManager {
         }
 
         let python_exe = env.python_path.as_deref().unwrap_or("python");
-        let output = crate::create_hidden_command(python_exe)
-            .args(["-m", "pip", "install", dep_name])
+        let mut output = crate::create_hidden_command(python_exe)
+            .args(["-m", "pip", "install", pip_pkg])
             .output()
             .map_err(|e| LakeTexError::Dependency(format!("Failed to spawn pip installer: {e}")))?;
+
+        // If standard pip install failed (e.g. permission error in system site-packages), retry with --user
+        if !output.status.success() {
+            if let Ok(user_output) = crate::create_hidden_command(python_exe)
+                .args(["-m", "pip", "install", "--user", pip_pkg])
+                .output()
+            {
+                if user_output.status.success() {
+                    output = user_output;
+                }
+            }
+        }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if output.status.success() {
-            if let Some(scripts) = &env.scripts_dir {
-                Self::add_to_process_path(&PathBuf::from(scripts));
+            Self::invalidate_python_environment();
+            let refreshed = Self::check_python_environment();
+            if let Some(scripts) = &refreshed.scripts_dir {
+                Self::add_to_process_path(Path::new(scripts));
+            }
+            if let Some(user_scripts) = &refreshed.user_scripts_dir {
+                let p = Path::new(user_scripts);
+                if p.is_dir() {
+                    Self::add_to_process_path(p);
+                }
+            }
+            if let Some(found_path) = Self::find_binary_path(spec.binary_name) {
+                if let Some(parent) = found_path.parent() {
+                    Self::add_to_process_path(parent);
+                }
             }
             Ok(format!(
                 "Successfully installed '{dep_name}' via pip.\n{}",

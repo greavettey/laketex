@@ -125,9 +125,12 @@ impl DiagnosticParser {
             if let Some(msg) = line.strip_prefix("error: ") {
                 let trimmed_msg = msg.trim();
                 // Filter out generic Tectonic wrapper messages that duplicate underlying TeX errors
+                // or benign shell probe commands from packages like minted probing for pygmentize extensions
                 if trimmed_msg.starts_with("something bad happened inside XeTeX")
                     || trimmed_msg.starts_with("the XeTeX engine had an unrecoverable error")
                     || trimmed_msg.contains("halted on potentially-recoverable error")
+                    || (trimmed_msg.contains("failed to execute the shell-escape command")
+                        && trimmed_msg.contains("pygmentize"))
                 {
                     i += 1;
                     continue;

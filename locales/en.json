@@ -55,7 +55,13 @@
     "zoom_in": "Zoom In",
     "zoom_out": "Zoom Out",
     "reset_zoom": "Reset Zoom",
-    "fit_page": "Fit Page"
+    "fit_page": "Fit Page",
+    "normal_desc": "High contrast white with black text",
+    "dark_desc": "Inverted RGB palette",
+    "sepia_desc": "Parchment with dark ink",
+    "color_day": "☀ Day",
+    "color_dark": "🌙 Dark",
+    "color_sepia": "📜 Sepia"
   },
   "sidebar": {
     "outline": "Outline",

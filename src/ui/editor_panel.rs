@@ -10,7 +10,7 @@
 use crate::compiler::Diagnostic;
 use crate::document::lexer::LatexLexer;
 use crate::t;
-use egui::{vec2, Color32, FontId, Key, RichText, ScrollArea, Stroke, TextEdit, Ui};
+use egui::{vec2, Align, Align2, Color32, FontId, Key, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui};
 
 /// Search and replace state for the editor.
 #[derive(Debug, Clone, Default)]
@@ -260,7 +260,6 @@ impl EditorPanel {
             .filter_map(|d| d.line)
             .collect();
 
-        let gutter_width = format!("{line_count}").len() as f32 * 9.0 + 20.0;
         let editor_id = egui::Id::new("latex_source_code_editor");
 
         // Handle Escape to close find/replace
@@ -269,53 +268,69 @@ impl EditorPanel {
             ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
         }
 
-        ui.horizontal(|ui| {
-            // Editor header / info line
-            ui.label(
-                RichText::new("LaTeX Source")
-                    .strong()
-                    .color(Color32::from_rgb(97, 175, 239)),
-            );
+        // 1. Editor header / info line
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), crate::ui::PANEL_HEADER_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_height(crate::ui::PANEL_HEADER_HEIGHT);
+                ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
 
-            if !error_lines.is_empty() {
-                ui.colored_label(
-                    Color32::from_rgb(235, 87, 87),
-                    format!("• {} line(s) with errors", error_lines.len()),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("LaTeX Source")
+                            .strong()
+                            .color(Color32::from_rgb(97, 175, 239)),
+                    )
+                    .selectable(false),
                 );
-            }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("A+").clicked() {
-                    self.font_size = (self.font_size + 1.0).min(24.0);
+                if !error_lines.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("• {} line(s) with errors", error_lines.len()))
+                                .color(Color32::from_rgb(235, 87, 87)),
+                        )
+                        .selectable(false),
+                    );
                 }
-                if ui.button("A-").clicked() {
-                    self.font_size = (self.font_size - 1.0).max(10.0);
-                }
-                ui.label(format!("{:.0}pt", self.font_size));
-                ui.label(format!("Lines: {line_count}"));
 
-                let find_label = if self.find_replace.is_open {
-                    "🔍 Find ✕"
-                } else {
-                    "🔍 Find (Ctrl+F)"
-                };
-                if ui
-                    .button(find_label)
-                    .on_hover_text("Search & Replace in document (Ctrl+F / Ctrl+H)")
-                    .clicked()
-                {
-                    if self.find_replace.is_open {
-                        self.close_find_replace();
-                        ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
-                    } else {
-                        self.open_find();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("A+").clicked() {
+                        self.font_size = (self.font_size + 1.0).min(24.0);
                     }
-                }
-            });
-        });
+                    if ui.button("A-").clicked() {
+                        self.font_size = (self.font_size - 1.0).max(10.0);
+                    }
+                    ui.add(egui::Label::new(format!("{:.0}pt", self.font_size)).selectable(false));
+                    ui.add(egui::Label::new(format!("Lines: {line_count}")).selectable(false));
+
+                    let find_label = if self.find_replace.is_open {
+                        "🔍 Find ✕"
+                    } else {
+                        "🔍 Find (Ctrl+F)"
+                    };
+                    if ui
+                        .button(find_label)
+                        .on_hover_text("Search & Replace in document (Ctrl+F / Ctrl+H)")
+                        .clicked()
+                    {
+                        if self.find_replace.is_open {
+                            self.close_find_replace();
+                            ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
+                        } else {
+                            self.open_find();
+                        }
+                    }
+                });
+            },
+        );
+
+        ui.separator();
 
         // Search & Replace Bar
         if self.find_replace.is_open {
+            let enter_pressed = ui.input(|i| i.key_pressed(Key::Enter));
             ui.add_space(2.0);
             ui.group(|ui| {
                 ui.horizontal(|ui| {
@@ -329,7 +344,30 @@ impl EditorPanel {
                     );
 
                     if self.find_replace.focus_input {
+                        // If editor had a single-line selection, pre-populate search query
+                        if let Some(state) = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id) {
+                            if let Some(range) = state.cursor.char_range() {
+                                let (s, e) = (
+                                    range.primary.index.min(range.secondary.index),
+                                    range.primary.index.max(range.secondary.index),
+                                );
+                                if s < e {
+                                    let selected_text: String = content.chars().skip(s).take(e - s).collect();
+                                    if !selected_text.contains('\n') && !selected_text.trim().is_empty() {
+                                        self.find_replace.search_query = selected_text;
+                                        self.find_replace.update_matches(content);
+                                    }
+                                }
+                            }
+                        }
+
                         search_resp.request_focus();
+                        let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), find_input_id).unwrap_or_default();
+                        state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(self.find_replace.search_query.chars().count()),
+                        )));
+                        state.store(ui.ctx(), find_input_id);
                         self.find_replace.focus_input = false;
                     }
 
@@ -340,9 +378,27 @@ impl EditorPanel {
                         }
                     }
 
-                    // Enter and Shift+Enter navigation within the search input
-                    if search_resp.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                        if ui.input(|i| i.modifiers.shift) {
+                    // Enter and Shift+Enter navigation within the search input (also supports F3 / Ctrl+G)
+                    let f3_pressed = ui.input(|i| i.key_pressed(Key::F3));
+                    let ctrl_g_pressed = ui.input(|i| (i.modifiers.ctrl || i.modifiers.command) && i.key_pressed(Key::G));
+                    let search_input_active = search_resp.has_focus() || (search_resp.lost_focus() && enter_pressed);
+
+                    if (search_input_active && enter_pressed) || f3_pressed || ctrl_g_pressed {
+                        let is_shift = ui.input(|i| i.modifiers.shift)
+                            || ui.input(|i| {
+                                i.events.iter().any(|e| {
+                                    matches!(
+                                        e,
+                                        egui::Event::Key {
+                                            key: Key::Enter | Key::F3 | Key::G,
+                                            modifiers,
+                                            ..
+                                        } if modifiers.shift
+                                    )
+                                })
+                            });
+
+                        if is_shift {
                             if self.find_replace.prev_match().is_some() {
                                 self.select_and_scroll_to_match(content);
                             }
@@ -351,6 +407,7 @@ impl EditorPanel {
                                 self.select_and_scroll_to_match(content);
                             }
                         }
+                        search_resp.request_focus();
                     }
 
                     // Match count badge
@@ -375,6 +432,7 @@ impl EditorPanel {
                         if !self.find_replace.matches.is_empty() {
                             self.select_and_scroll_to_match(content);
                         }
+                        search_resp.request_focus();
                     }
 
                     let word_btn = ui
@@ -386,6 +444,7 @@ impl EditorPanel {
                         if !self.find_replace.matches.is_empty() {
                             self.select_and_scroll_to_match(content);
                         }
+                        search_resp.request_focus();
                     }
 
                     // Previous / Next buttons
@@ -393,11 +452,13 @@ impl EditorPanel {
                         if self.find_replace.prev_match().is_some() {
                             self.select_and_scroll_to_match(content);
                         }
+                        search_resp.request_focus();
                     }
                     if ui.button("▼").on_hover_text("Next match (Enter)").clicked() {
                         if self.find_replace.next_match().is_some() {
                             self.select_and_scroll_to_match(content);
                         }
+                        search_resp.request_focus();
                     }
 
                     let rep_toggle = ui
@@ -419,15 +480,26 @@ impl EditorPanel {
                     ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Repl:").small().strong());
-                        ui.add(
+                        let rep_resp = ui.add(
                             egui::TextEdit::singleline(&mut self.find_replace.replace_text)
                                 .hint_text("Replace with...")
                                 .desired_width(170.0),
                         );
 
+                        let rep_input_active = rep_resp.has_focus() || (rep_resp.lost_focus() && enter_pressed);
+                        if rep_input_active && enter_pressed {
+                            if self.find_replace.replace_current(content) {
+                                text_changed = true;
+                                if !self.find_replace.matches.is_empty() {
+                                    self.select_and_scroll_to_match(content);
+                                }
+                            }
+                            rep_resp.request_focus();
+                        }
+
                         if ui
                             .button("Replace")
-                            .on_hover_text("Replace currently selected match and move to next")
+                            .on_hover_text("Replace currently selected match and move to next (Enter)")
                             .clicked()
                         {
                             if self.find_replace.replace_current(content) {
@@ -451,15 +523,35 @@ impl EditorPanel {
                 }
             });
             ui.add_space(2.0);
+            ui.separator();
         }
 
-        ui.separator();
+        // Ctrl+Mouse Wheel zoom for editor font size
+        let ctrl_font_zoom = ui.input(|i| {
+            if (i.modifiers.command || i.modifiers.ctrl) && i.raw_scroll_delta.y != 0.0 {
+                if i.raw_scroll_delta.y > 0.0 {
+                    Some(0.5)
+                } else {
+                    Some(-0.5)
+                }
+            } else {
+                None
+            }
+        });
+        if let Some(delta) = ctrl_font_zoom {
+            self.font_size = (self.font_size + delta).clamp(10.0, 24.0);
+        }
 
         let font_id = FontId::monospace(self.font_size);
+        let char_width = ui.fonts(|f| f.glyph_width(&font_id, '0'));
+        let gutter_digits = format!("{line_count}").len().max(4);
+        let gutter_width = (gutter_digits as f32 + 2.5) * char_width;
 
-        let mut scroll = ScrollArea::vertical()
+        let scroll = ScrollArea::vertical()
             .id_salt("editor_scroll_area")
             .auto_shrink([false, false]);
+
+        let mut scroll_target_range: Option<(usize, usize)> = None;
 
         if let Some((start_c, end_c)) = self.target_selection.take() {
             let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
@@ -468,66 +560,51 @@ impl EditorPanel {
                 egui::text::CCursor::new(end_c),
             )));
             state.store(ui.ctx(), editor_id);
-            ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
-        } else if let Some(target_line) = self.target_scroll_line {
+            scroll_target_range = Some((start_c, end_c));
+            self.target_scroll_line = None;
+            // Crucial: Do NOT request focus on editor_id here!
+            // When navigating or typing search terms, focus MUST remain in the search input box.
+        } else if let Some(target_line) = self.target_scroll_line.take() {
             let mut char_idx = 0;
-            for (idx, line) in content.lines().enumerate() {
-                if idx + 1 == target_line {
-                    break;
+            if target_line > 1 {
+                let mut current_line = 1;
+                for (idx, ch) in content.chars().enumerate() {
+                    if ch == '\n' {
+                        current_line += 1;
+                        if current_line == target_line {
+                            char_idx = idx + 1;
+                            break;
+                        }
+                    }
                 }
-                char_idx += line.chars().count() + 1;
             }
             char_idx = char_idx.min(content.chars().count());
 
             let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
             state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(egui::text::CCursor::new(char_idx))));
             state.store(ui.ctx(), editor_id);
-            ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
+            scroll_target_range = Some((char_idx, char_idx));
+
+            // Only request focus on the editor if find/replace is closed (e.g. outline click, diagnostic jump)
+            if !self.find_replace.is_open {
+                ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
+            }
         }
 
-        if let Some(target_line) = self.target_scroll_line.take() {
-            let row_height = ui.fonts(|f| f.row_height(&font_id));
-            let target_y = (target_line.saturating_sub(4) as f32 * row_height).max(0.0);
-            scroll = scroll.vertical_scroll_offset(target_y);
-        }
+        let mut clicked_gutter_line: Option<usize> = None;
 
         scroll.show(ui, |ui| {
             ui.horizontal_top(|ui| {
-                // Line numbers gutter
-                ui.allocate_ui_with_layout(
-                    vec2(gutter_width, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::RIGHT),
-                    |ui| {
-                        let gutter_color = if is_dark {
-                            Color32::from_rgb(90, 95, 110)
-                        } else {
-                            Color32::from_rgb(150, 155, 165)
-                        };
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
 
-                        for i in 1..=line_count {
-                            let has_error = error_lines.contains(&i);
-                            if has_error {
-                                ui.colored_label(
-                                    Color32::from_rgb(235, 87, 87),
-                                    format!("{i:>4} ●"),
-                                );
-                            } else {
-                                ui.colored_label(gutter_color, format!("{i:>4} "));
-                            }
-                        }
-                    },
-                );
+                // Reserve gutter width
+                let (gutter_rect, _) = ui.allocate_exact_size(vec2(gutter_width, 0.0), Sense::hover());
 
-                // Separator line between gutter and text edit
-                let stroke_color = if is_dark {
-                    Color32::from_rgb(45, 50, 60)
-                } else {
-                    Color32::from_rgb(215, 220, 230)
-                };
-                let (sep_rect, _) = ui.allocate_exact_size(vec2(1.0, ui.available_height()), egui::Sense::hover());
-                ui.painter().vline(sep_rect.left(), sep_rect.y_range(), Stroke::new(1.0_f32, stroke_color));
+                // Separator line rect
+                let (sep_rect, _) = ui.allocate_exact_size(vec2(1.0, 0.0), Sense::hover());
 
-                ui.add_space(4.0);
+                // Padding between separator and text
+                let (_space_rect, _) = ui.allocate_exact_size(vec2(4.0, 0.0), Sense::hover());
 
                 // Main syntax-highlighted code editor
                 let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
@@ -536,22 +613,221 @@ impl EditorPanel {
                     ui.fonts(|f| f.layout_job(job))
                 };
 
-                let response = ui.add_sized(
-                    ui.available_size(),
-                    TextEdit::multiline(content)
-                        .id(editor_id)
-                        .font(font_id.clone())
-                        .code_editor()
-                        .layouter(&mut layouter)
-                        .lock_focus(true)
-                        .desired_width(f32::INFINITY),
-                );
+                let output = TextEdit::multiline(content)
+                    .id(editor_id)
+                    .font(font_id.clone())
+                    .code_editor()
+                    .layouter(&mut layouter)
+                    .lock_focus(true)
+                    .desired_width(f32::INFINITY)
+                    .show(ui);
 
-                if response.changed() {
+                if output.response.changed() {
                     text_changed = true;
+                }
+
+                let clip_rect = ui.clip_rect();
+
+                // Accurately scroll to target words or lines using actual galley layout geometry
+                if let Some((s, e)) = scroll_target_range {
+                    let c1 = egui::text::CCursor::new(s);
+                    let c2 = egui::text::CCursor::new(e.max(s));
+                    let cur1 = output.galley.from_ccursor(c1);
+                    let cur2 = output.galley.from_ccursor(c2);
+                    let range = egui::text_selection::CursorRange::two(cur1, cur2);
+                    let [min, max] = range.sorted_cursors();
+                    if min.rcursor.row < output.galley.rows.len() {
+                        let row = &output.galley.rows[min.rcursor.row];
+                        let left = row.x_offset(min.rcursor.column);
+                        let right = if min.rcursor.row == max.rcursor.row && s != e {
+                            row.x_offset(max.rcursor.column)
+                        } else {
+                            left + 4.0
+                        };
+                        let target_rect = Rect::from_min_max(
+                            Pos2::new(left, row.min_y()),
+                            Pos2::new(right, row.max_y()),
+                        ).translate(output.galley_pos.to_vec2());
+                        ui.scroll_to_rect(target_rect, Some(Align::Center));
+                    }
+                }
+
+                // Highlight occurrences in Find & Replace modal
+                if self.find_replace.is_open && !self.find_replace.matches.is_empty() {
+                    let current_idx = self.find_replace.current_match_idx.min(self.find_replace.matches.len().saturating_sub(1));
+
+                    for (idx, &(start_char, end_char)) in self.find_replace.matches.iter().enumerate() {
+                        let is_current = idx == current_idx;
+                        let c1 = egui::text::CCursor::new(start_char);
+                        let c2 = egui::text::CCursor::new(end_char);
+                        let cur1 = output.galley.from_ccursor(c1);
+                        let cur2 = output.galley.from_ccursor(c2);
+                        let range = egui::text_selection::CursorRange::two(cur1, cur2);
+                        let [min, max] = range.sorted_cursors();
+
+                        for ri in min.rcursor.row..=max.rcursor.row {
+                            if ri >= output.galley.rows.len() {
+                                break;
+                            }
+                            let row = &output.galley.rows[ri];
+                            let left = if ri == min.rcursor.row {
+                                row.x_offset(min.rcursor.column)
+                            } else {
+                                row.rect.left()
+                            };
+                            let right = if ri == max.rcursor.row {
+                                row.x_offset(max.rcursor.column)
+                            } else {
+                                row.rect.right()
+                            };
+
+                            let match_rect = Rect::from_min_max(
+                                Pos2::new(left, row.min_y()),
+                                Pos2::new(right, row.max_y()),
+                            ).translate(output.galley_pos.to_vec2());
+
+                            if match_rect.intersects(clip_rect) {
+                                if is_current {
+                                    // Current active match: vibrant amber highlight box with crisp golden border
+                                    let fill_color = if is_dark {
+                                        Color32::from_rgba_unmultiplied(255, 170, 0, 110)
+                                    } else {
+                                        Color32::from_rgba_unmultiplied(255, 160, 0, 130)
+                                    };
+                                    let stroke_color = if is_dark {
+                                        Color32::from_rgb(255, 215, 0)
+                                    } else {
+                                        Color32::from_rgb(220, 120, 0)
+                                    };
+                                    ui.painter().rect(
+                                        match_rect.expand(1.0),
+                                        2.0,
+                                        fill_color,
+                                        Stroke::new(1.5_f32, stroke_color),
+                                        StrokeKind::Outside,
+                                    );
+                                } else {
+                                    // Other matches: subtle translucent highlight
+                                    let fill_color = if is_dark {
+                                        Color32::from_rgba_unmultiplied(255, 220, 50, 45)
+                                    } else {
+                                        Color32::from_rgba_unmultiplied(255, 200, 0, 60)
+                                    };
+                                    ui.painter().rect_filled(match_rect.expand(0.5), 1.5, fill_color);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Draw separator line full height
+                let stroke_color = if is_dark {
+                    Color32::from_rgb(45, 50, 60)
+                } else {
+                    Color32::from_rgb(215, 220, 230)
+                };
+                let full_height = output.response.rect.height().max(ui.available_height());
+                let sep_top = output.galley_pos.y;
+                let sep_bottom = (sep_top + full_height).max(output.response.rect.bottom());
+                ui.painter().vline(sep_rect.left(), sep_top..=sep_bottom, Stroke::new(1.0_f32, stroke_color));
+
+                // Contextual line highlighting: determine active line being edited from cursor
+                let active_line = output.cursor_range.map(|r| {
+                    content.chars().take(r.primary.ccursor.index).filter(|&c| c == '\n').count() + 1
+                }).or_else(|| {
+                    egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id).and_then(|state| {
+                        state.cursor.char_range().map(|r| {
+                            content.chars().take(r.primary.index).filter(|&c| c == '\n').count() + 1
+                        })
+                    })
+                });
+
+                // Paint gutter line numbers and diagnostics aligned with the galley's visual rows
+                let gutter_color = if is_dark {
+                    Color32::from_rgb(90, 95, 110)
+                } else {
+                    Color32::from_rgb(150, 155, 165)
+                };
+                let error_color = Color32::from_rgb(235, 87, 87);
+
+                let mut current_logical_line = 1;
+                let mut is_first_row_of_logical_line = true;
+
+                for row in &output.galley.rows {
+                    let row_top = output.galley_pos.y + row.rect.top();
+                    let row_bottom = row_top + row.rect.height();
+
+                    if is_first_row_of_logical_line {
+                        if row_bottom >= clip_rect.top() && row_top <= clip_rect.bottom() {
+                            let has_error = error_lines.contains(&current_logical_line);
+                            let is_active_line = active_line == Some(current_logical_line);
+
+                            let label_text = if has_error {
+                                format!("{current_logical_line:>gutter_digits$} ●")
+                            } else {
+                                format!("{current_logical_line:>gutter_digits$} ")
+                            };
+                            let text_color = if has_error {
+                                error_color
+                            } else if is_active_line {
+                                if is_dark {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::from_rgb(20, 25, 35)
+                                }
+                            } else {
+                                gutter_color
+                            };
+
+                            ui.painter().text(
+                                Pos2::new(gutter_rect.right() - 2.0, row_top),
+                                Align2::RIGHT_TOP,
+                                label_text,
+                                font_id.clone(),
+                                text_color,
+                            );
+
+                            let row_rect = Rect::from_min_size(
+                                Pos2::new(gutter_rect.left(), row_top),
+                                vec2(gutter_width, row.rect.height()),
+                            );
+
+                            if has_error {
+                                let line_errors: Vec<&str> = diagnostics
+                                    .iter()
+                                    .filter(|d| d.line == Some(current_logical_line) && d.severity == crate::compiler::DiagnosticSeverity::Error)
+                                    .map(|d| d.message.as_str())
+                                    .collect();
+                                if !line_errors.is_empty() {
+                                    ui.interact(row_rect, ui.id().with(("gutter_diag", current_logical_line)), Sense::hover())
+                                        .on_hover_text(line_errors.join("\n"));
+                                }
+                            }
+
+                            let row_resp = ui.interact(
+                                row_rect,
+                                ui.id().with(("gutter_click", current_logical_line)),
+                                Sense::click(),
+                            );
+                            if row_resp.clicked() {
+                                clicked_gutter_line = Some(current_logical_line);
+                            }
+                        }
+                    }
+
+                    if row.ends_with_newline {
+                        current_logical_line += 1;
+                        is_first_row_of_logical_line = true;
+                    } else {
+                        is_first_row_of_logical_line = false;
+                    }
                 }
             });
         });
+
+        if let Some(line) = clicked_gutter_line {
+            self.jump_to_line(line);
+        }
 
         text_changed
     }
@@ -637,5 +913,35 @@ mod tests {
         let (start, end) = state.matches[0];
         let sub: String = content.chars().skip(start).take(end - start).collect();
         assert_eq!(sub, "theta");
+    }
+
+    #[test]
+    fn test_select_and_scroll_to_match() {
+        let mut panel = EditorPanel::new();
+        panel.find_replace.search_query = "second".to_string();
+        let content = "first line\nsecond line\nthird line";
+        panel.find_replace.update_matches(content);
+        assert_eq!(panel.find_replace.matches.len(), 1);
+
+        panel.select_and_scroll_to_match(content);
+        assert_eq!(panel.target_selection, Some((11, 17)));
+        assert_eq!(panel.target_scroll_line, Some(2));
+    }
+
+    #[test]
+    fn test_active_editing_line_detection() {
+        let content = "first line\nsecond line is very long\nthird line\n";
+        let compute_line = |char_idx: usize| -> usize {
+            content.chars().take(char_idx).filter(|&c| c == '\n').count() + 1
+        };
+
+        assert_eq!(compute_line(0), 1);
+        assert_eq!(compute_line(5), 1);
+        assert_eq!(compute_line(10), 1); // at first '\n'
+        assert_eq!(compute_line(11), 2); // 's' in second
+        assert_eq!(compute_line(25), 2);
+        assert_eq!(compute_line(35), 2); // at second '\n'
+        assert_eq!(compute_line(36), 3); // 't' in third
+        assert_eq!(compute_line(47), 4); // after trailing '\n'
     }
 }

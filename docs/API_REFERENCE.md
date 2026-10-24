@@ -200,7 +200,7 @@ Lints the LaTeX source and returns error diagnostics, line numbers, and warnings
     }
   ],
   "duration_ms": 48,
-  "error_report_markdown": "# 🚨 Laketex Compilation Error & Diagnostic Report\n...",
+  "error_report_markdown": "#  Laketex Compilation Error & Diagnostic Report\n...",
   "error_report": {
     "app_version": "0.1.0",
     "document_name": "api_document.tex",

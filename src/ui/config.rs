@@ -49,7 +49,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme_name: "Dracula (JetBrains)".to_string(),
-            pdf_color_mode: PdfColorMode::AcademicDark,
+            pdf_color_mode: PdfColorMode::Normal,
             pdf_render_width: 1200,
             view_mode: ViewMode::PdfRaster,
             default_engine: EngineKind::Tectonic,
@@ -405,7 +405,7 @@ mod tests {
         let cfg: AppConfig = serde_json::from_str(partial_json).expect("deserialize partial");
         assert_eq!(cfg.theme_name, "Nord Frost");
         assert_eq!(cfg.pdf_render_width, 2000);
-        assert_eq!(cfg.pdf_color_mode, PdfColorMode::AcademicDark);
+        assert_eq!(cfg.pdf_color_mode, PdfColorMode::Normal);
         assert_eq!(cfg.shortcuts.compile, "Ctrl+B");
     }
 }

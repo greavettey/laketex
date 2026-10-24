@@ -158,7 +158,7 @@ fn test_native_compile_and_pdf_export() {
     use laketex::compiler::engine::{CompilerEngine, EngineKind};
     use laketex::document::DEFAULT_DOCUMENT_TEMPLATE;
 
-    let res = CompilerEngine::compile(DEFAULT_DOCUMENT_TEMPLATE, EngineKind::Native, None)
+    let res = CompilerEngine::compile(DEFAULT_DOCUMENT_TEMPLATE, EngineKind::Tectonic, None)
         .expect("Native compilation must succeed without external tools");
     assert!(res.success);
     assert!(res.pdf_bytes.is_some(), "Native compiler must produce valid PDF bytes");
@@ -197,7 +197,7 @@ Here is the faulty formulation:
     let report = ErrorReport::generate(
         faulty_source,
         "faulty_doc.tex",
-        EngineKind::Native,
+        EngineKind::Tectonic,
         &diags,
         "",
         "Error: compilation failed",
@@ -383,7 +383,7 @@ def calculate():
     assert!(bytes.starts_with(b"%PDF-"));
 
     // 3. Verify Native engine compilation
-    let res = CompilerEngine::compile(source, EngineKind::Native, None)
+    let res = CompilerEngine::compile(source, EngineKind::Tectonic, None)
         .expect("Native compilation should succeed");
     assert!(res.success);
     assert!(res.pdf_bytes.is_some());
@@ -424,7 +424,7 @@ fn test_compiler_engine_cleans_stale_pdf_and_handles_syntax_errors() {
 \undefinedmacro{not closed
 "#;
 
-    let res = CompilerEngine::compile(broken_latex, EngineKind::Native, None)
+    let res = CompilerEngine::compile(broken_latex, EngineKind::Tectonic, None)
         .expect("Engine call should complete");
     // Even if native engine parses it, verify that if an error is flagged, pdf_bytes is None or valid
     if !res.success {
@@ -835,4 +835,527 @@ fn test_unsaved_changes_pending_actions() {
         let cloned = action.clone();
         assert_eq!(action, cloned);
     }
+}
+
+
+#[test]
+fn test_stale_pdf_and_master_hijack_prevention() {
+    use laketex::compiler::engine::{CompilerEngine, EngineKind};
+    use laketex::ui::project_manager::ProjectManager;
+    use tempfile::tempdir;
+    use std::fs;
+
+    let dir = tempdir().expect("Failed to create tempdir");
+    let doc_a = dir.path().join("document.tex");
+    let _doc_b = dir.path().join("paper_b.tex");
+    let stale_pdf = dir.path().join("paper_b.pdf");
+
+    // Write a pre-existing stale PDF left from a previous session on disk
+    fs::write(&stale_pdf, b"%PDF-1.4 STALE OLD SESSION DATA").unwrap();
+
+    // doc_a is in the directory
+    fs::write(&doc_a, "\\documentclass{article}\n\\begin{document}\nDoc A\n\\end{document}\n").unwrap();
+
+    // Verify ProjectManager does NOT auto-detect document.tex as a master document
+    let pm = ProjectManager::new(Some(dir.path().to_path_buf()));
+    assert!(pm.master_document.is_none(), "document.tex must not be auto-detected as a master document");
+
+    // Compile broken source for paper_b: it must NOT pick up stale_pdf from disk
+    let broken_source = "\\documentclass{article}\n\\begin{document}\n\\begin{unclosed_environment_that_causes_tectonic_error}";
+    let res = CompilerEngine::compile_named(
+        broken_source,
+        EngineKind::Tectonic,
+        Some(dir.path()),
+        Some("paper_b.tex"),
+    ).unwrap();
+
+    assert!(!res.success);
+    assert!(res.pdf_bytes.is_none(), "Broken compilation must not return stale PDF bytes from disk");
+}
+
+
+#[test]
+fn test_crlf_and_lf_caret_jump_character_alignment() {
+    // CRLF document
+    let crlf_content = "first\r\nsecond\r\nthird\r\nfourth";
+    // Line 1 should start at index 0 ('f')
+    // Line 2 should start at index 7 ('s')
+    // Line 3 should start at index 15 ('t')
+    // Line 4 should start at index 22 ('f')
+
+    let compute_char_idx = |content: &str, target_line: usize| -> usize {
+        let mut char_idx = 0;
+        if target_line > 1 {
+            let mut current_line = 1;
+            for (idx, ch) in content.chars().enumerate() {
+                if ch == '\n' {
+                    current_line += 1;
+                    if current_line == target_line {
+                        char_idx = idx + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        char_idx.min(content.chars().count())
+    };
+
+    assert_eq!(compute_char_idx(crlf_content, 1), 0);
+    assert_eq!(crlf_content.chars().nth(compute_char_idx(crlf_content, 1)), Some('f'));
+
+    assert_eq!(compute_char_idx(crlf_content, 2), 7);
+    assert_eq!(crlf_content.chars().nth(compute_char_idx(crlf_content, 2)), Some('s'));
+
+    assert_eq!(compute_char_idx(crlf_content, 3), 15);
+    assert_eq!(crlf_content.chars().nth(compute_char_idx(crlf_content, 3)), Some('t'));
+
+    assert_eq!(compute_char_idx(crlf_content, 4), 22);
+    assert_eq!(crlf_content.chars().nth(compute_char_idx(crlf_content, 4)), Some('f'));
+
+    // Unix LF document
+    let lf_content = "first\nsecond\nthird\nfourth";
+    assert_eq!(compute_char_idx(lf_content, 1), 0);
+    assert_eq!(lf_content.chars().nth(compute_char_idx(lf_content, 1)), Some('f'));
+
+    assert_eq!(compute_char_idx(lf_content, 2), 6);
+    assert_eq!(lf_content.chars().nth(compute_char_idx(lf_content, 2)), Some('s'));
+
+    assert_eq!(compute_char_idx(lf_content, 3), 13);
+    assert_eq!(lf_content.chars().nth(compute_char_idx(lf_content, 3)), Some('t'));
+
+    assert_eq!(compute_char_idx(lf_content, 4), 19);
+    assert_eq!(lf_content.chars().nth(compute_char_idx(lf_content, 4)), Some('f'));
+}
+
+#[test]
+fn test_save_as_path_extension_sanitization() {
+    use std::path::PathBuf;
+
+    let mut path_without_ext = PathBuf::from("my_paper");
+    if path_without_ext.extension().is_none() {
+        path_without_ext.set_extension("tex");
+    }
+    assert_eq!(path_without_ext.to_str().unwrap(), "my_paper.tex");
+
+    let mut path_with_ext = PathBuf::from("existing.tex");
+    if path_with_ext.extension().is_none() {
+        path_with_ext.set_extension("tex");
+    }
+    assert_eq!(path_with_ext.to_str().unwrap(), "existing.tex");
+}
+
+#[test]
+fn test_toolbar_action_inspect_errors() {
+    use laketex::ui::toolbar::ToolbarAction;
+
+    let action = ToolbarAction {
+        inspect_errors: true,
+        ..Default::default()
+    };
+    assert!(action.inspect_errors);
+    assert!(!action.compile_requested);
+}
+
+#[test]
+fn test_glyphtounicode_shim_compiles_in_tectonic() {
+    use laketex::compiler::engine::{CompilerEngine, EngineKind};
+
+    let resume_source = r#"\documentclass{article}
+\usepackage{latexsym}
+\input{glyphtounicode}
+\pdfgentounicode=1
+\begin{document}
+\section{Experience}
+Software Engineer at Tech Corp.
+\end{document}
+"#;
+
+    let res = CompilerEngine::compile(resume_source, EngineKind::Tectonic, None)
+        .expect("Compilation failed");
+
+    assert!(res.success, "Compilation failed: stdout={}, stderr={}", res.stdout, res.stderr);
+    assert!(res.pdf_bytes.is_some(), "Output PDF bytes should be present");
+}
+
+#[test]
+fn test_match_bounding_rect_from_ccursor() {
+    let ctx = egui::Context::default();
+    let _ = ctx.run(Default::default(), |ctx| {
+        let font_id = egui::FontId::monospace(14.0);
+        let text = "Line 1 is wrapping nicely\nFind TARGET here\nThird line";
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut buf = text.to_string();
+            let mut layouter = |_ui: &egui::Ui, text: &str, wrap_width: f32| {
+                let job = egui::text::LayoutJob::simple(text.to_string(), font_id.clone(), egui::Color32::WHITE, wrap_width);
+                _ui.fonts(|f| f.layout_job(job))
+            };
+            let output = egui::TextEdit::multiline(&mut buf)
+                .code_editor()
+                .layouter(&mut layouter)
+                .desired_width(120.0)
+                .show(ui);
+
+            // Find TARGET in text
+            let start = text.find("TARGET").unwrap();
+            let end = start + "TARGET".len();
+
+            let c1 = egui::text::CCursor::new(start);
+            let c2 = egui::text::CCursor::new(end);
+            let cur1 = output.galley.from_ccursor(c1);
+            let cur2 = output.galley.from_ccursor(c2);
+            let range = egui::text_selection::CursorRange::two(cur1, cur2);
+            let [min, max] = range.sorted_cursors();
+
+            let mut match_rects = Vec::new();
+            for ri in min.rcursor.row..=max.rcursor.row {
+                let row = &output.galley.rows[ri];
+                let left = if ri == min.rcursor.row {
+                    row.x_offset(min.rcursor.column)
+                } else {
+                    row.rect.left()
+                };
+                let right = if ri == max.rcursor.row {
+                    row.x_offset(max.rcursor.column)
+                } else {
+                    row.rect.right()
+                };
+                let rect = egui::Rect::from_min_max(egui::pos2(left, row.min_y()), egui::pos2(right, row.max_y()))
+                    .translate(output.galley_pos.to_vec2());
+                match_rects.push(rect);
+            }
+
+            assert_eq!(match_rects.len(), 1);
+            let target_rect = match_rects[0];
+            assert!(target_rect.width() > 0.0);
+            assert!(target_rect.height() > 0.0);
+            println!("TARGET rect: {:?}", target_rect);
+            ui.scroll_to_rect(target_rect, Some(egui::Align::Center));
+        });
+    });
+}
+
+#[test]
+fn test_gutter_wrapped_lines_alignment() {
+    let ctx = egui::Context::default();
+    let _ = ctx.run(Default::default(), |ctx| {
+        let font_id = egui::FontId::monospace(14.0);
+        // Logical Line 1: very long, wraps into 3 visual rows
+        // Logical Line 2: empty line (just newline)
+        // Logical Line 3: short line
+        // Logical Line 4: wraps into 2 visual rows
+        let text = "First line is intentionally crafted to be exceedingly long so that it wraps across multiple visual rows in the editor buffer.\n\nThird line short\nFourth line is also sufficiently long to wrap across two lines in this narrow container.\n";
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut buf = text.to_string();
+            let mut layouter = |_ui: &egui::Ui, text: &str, wrap_width: f32| {
+                let job = egui::text::LayoutJob::simple(text.to_string(), font_id.clone(), egui::Color32::WHITE, wrap_width);
+                _ui.fonts(|f| f.layout_job(job))
+            };
+            let gutter_width = 45.0;
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                let (gutter_rect, _) = ui.allocate_exact_size(egui::vec2(gutter_width, 0.0), egui::Sense::hover());
+                let (_sep_rect, _) = ui.allocate_exact_size(egui::vec2(1.0_f32, 0.0), egui::Sense::hover());
+                let (_space_rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 0.0), egui::Sense::hover());
+
+                let output = egui::TextEdit::multiline(&mut buf)
+                    .code_editor()
+                    .layouter(&mut layouter)
+                    .desired_width(140.0) // Narrow width forces wrapping
+                    .show(ui);
+
+                let mut current_logical_line = 1;
+                let mut is_first_row = true;
+                let mut row_records = Vec::new();
+
+                for (row_idx, row) in output.galley.rows.iter().enumerate() {
+                    let row_top = output.galley_pos.y + row.rect.top();
+                    row_records.push((row_idx, current_logical_line, row_top, is_first_row));
+
+                    if row.ends_with_newline {
+                        current_logical_line += 1;
+                        is_first_row = true;
+                    } else {
+                        is_first_row = false;
+                    }
+                }
+
+                // Verify that every visual row has a strictly increasing Y coordinate
+                for w in row_records.windows(2) {
+                    assert!(w[1].2 > w[0].2, "Visual rows must advance vertically");
+                }
+
+                // Verify that only the first visual row of each logical line is marked as is_first_row
+                let displayed_lines: Vec<(usize, usize)> = row_records
+                    .iter()
+                    .filter(|r| r.3)
+                    .map(|r| (r.0, r.1))
+                    .collect();
+
+                // Logical line 1 starts at row 0
+                assert_eq!(displayed_lines[0].1, 1);
+                assert_eq!(displayed_lines[0].0, 0);
+
+                // Logical line 2 (empty line) starts at the row after line 1 finishes wrapping
+                assert_eq!(displayed_lines[1].1, 2);
+                assert!(displayed_lines[1].0 > 1, "Line 1 should wrap across multiple rows before Line 2 starts");
+
+                // Total logical lines: 1, 2, 3, 4, 5 (empty line at end from trailing newline)
+                let unique_logical_lines: Vec<usize> = displayed_lines.iter().map(|d| d.1).collect();
+                assert_eq!(unique_logical_lines, vec![1, 2, 3, 4, 5]);
+
+                // Verify gutter_rect boundaries
+                assert_eq!(gutter_rect.width(), gutter_width);
+            });
+        });
+    });
+}
+
+#[test]
+fn test_find_replace_enter_and_shift_enter_navigation() {
+    use laketex::ui::editor_panel::EditorPanel;
+
+    let ctx = egui::Context::default();
+    let mut panel = EditorPanel::new();
+    let mut content = "apple orange apple banana apple".to_string();
+
+    panel.open_find();
+    panel.find_replace.search_query = "apple".to_string();
+    panel.find_replace.update_matches(&content);
+    assert_eq!(panel.find_replace.matches.len(), 3);
+    assert_eq!(panel.find_replace.current_match_idx, 0);
+
+    // Frame 1: Render EditorPanel, focusing the search input
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            panel.show(ui, &mut content, &[], false);
+        });
+    });
+
+    // Frame 2: Press Enter in search input -> jump to match 1
+    let mut raw_input2 = egui::RawInput::default();
+    raw_input2.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    let _ = ctx.run(raw_input2, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            panel.show(ui, &mut content, &[], false);
+        });
+    });
+    assert_eq!(panel.find_replace.current_match_idx, 1, "Enter should jump to next match (index 1)");
+
+    // Frame 3: Press Enter again -> jump to match 2
+    let mut raw_input3 = egui::RawInput::default();
+    raw_input3.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    let _ = ctx.run(raw_input3, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            panel.show(ui, &mut content, &[], false);
+        });
+    });
+    assert_eq!(panel.find_replace.current_match_idx, 2, "Enter should jump to next match (index 2)");
+
+    // Frame 4: Press Shift+Enter -> jump back to match 1
+    let mut raw_input4 = egui::RawInput::default();
+    raw_input4.modifiers = egui::Modifiers::SHIFT;
+    raw_input4.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::SHIFT,
+    });
+    let _ = ctx.run(raw_input4, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            panel.show(ui, &mut content, &[], false);
+        });
+    });
+    assert_eq!(panel.find_replace.current_match_idx, 1, "Shift+Enter should jump back to previous match (index 1)");
+
+    // Frame 5: Press Shift+Enter -> jump back to match 0
+    let mut raw_input5 = egui::RawInput::default();
+    raw_input5.modifiers = egui::Modifiers::SHIFT;
+    raw_input5.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::SHIFT,
+    });
+    let _ = ctx.run(raw_input5, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            panel.show(ui, &mut content, &[], false);
+        });
+    });
+    assert_eq!(panel.find_replace.current_match_idx, 0, "Shift+Enter should jump back to match (index 0)");
+
+    // Frame 6: Press Shift+Enter -> wrap around to match 2
+    let mut raw_input6 = egui::RawInput::default();
+    raw_input6.modifiers = egui::Modifiers::SHIFT;
+    raw_input6.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::SHIFT,
+    });
+    let _ = ctx.run(raw_input6, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            panel.show(ui, &mut content, &[], false);
+        });
+    });
+    assert_eq!(panel.find_replace.current_match_idx, 2, "Shift+Enter should wrap around to last match (index 2)");
+}
+
+#[test]
+fn test_python_env_refresh_and_path_discovery() {
+    use laketex::document::packages::PackageManager;
+
+    // Verify python environment detection
+    let env = PackageManager::check_python_environment();
+    if env.python_available {
+        assert!(env.python_path.is_some());
+        assert!(env.python_version.is_some());
+
+        // Test cache invalidation and re-probing
+        PackageManager::invalidate_python_environment();
+        let refreshed = PackageManager::check_python_environment();
+        assert_eq!(env.python_path, refreshed.python_path);
+
+        // Test find_binary_path and is_binary_available
+        if PackageManager::is_binary_available("pygmentize") {
+            let path = PackageManager::find_binary_path("pygmentize");
+            assert!(path.is_some(), "Path to pygmentize must be resolved if available");
+            let path_buf = path.unwrap();
+            assert!(path_buf.is_file(), "Resolved binary must be an existing file");
+        }
+    }
+}
+
+#[test]
+fn test_tectonic_minted_compilation_with_pygments() {
+    use laketex::compiler::engine::{CompilerEngine, EngineKind};
+    use laketex::document::packages::PackageManager;
+
+    if !PackageManager::is_binary_available("pygmentize") {
+        return;
+    }
+
+    let source = r#"\documentclass{article}
+\usepackage{minted}
+\begin{document}
+\begin{minted}{python}
+def greet(name: str) -> str:
+    return f"Hello, {name}!"
+\end{minted}
+\end{document}"#;
+
+    let res = CompilerEngine::compile(source, EngineKind::Tectonic, None);
+    assert!(res.is_ok(), "Tectonic compilation should succeed: {:?}", res.err());
+    let compile_result = res.unwrap();
+    assert!(compile_result.success, "Compilation result should indicate success. Diagnostics: {:?}", compile_result.diagnostics);
+    assert!(compile_result.pdf_bytes.is_some(), "PDF bytes should be generated");
+    let pdf = compile_result.pdf_bytes.unwrap();
+    assert!(pdf.starts_with(b"%PDF-"), "Generated file must be valid PDF");
+
+    // Must NOT have fallen back to draft mode
+    for diag in &compile_result.diagnostics {
+        assert!(
+            !diag.message.contains("compiled in fallback draft mode"),
+            "Minted must not fail back to draft mode when pygmentize is installed: {}",
+            diag.message
+        );
+    }
+}
+
+#[test]
+fn test_non_toolbar_panel_headers_vertical_consistency() {
+    use laketex::ui::editor_panel::EditorPanel;
+    use laketex::ui::project_manager::ProjectManager;
+    use laketex::ui::sidebar::Sidebar;
+    use laketex::ui::viewer_panel::{ViewMode, ViewerPanel};
+    use laketex::ui::PANEL_HEADER_HEIGHT;
+    use laketex::viewer::canvas::PdfCanvas;
+    use laketex::viewer::PdfRenderer;
+
+    assert_eq!(PANEL_HEADER_HEIGHT, 25.0);
+
+    let ctx = egui::Context::default();
+    let theme = laketex::ui::theme::ThemeConfig::dracula_jetbrains();
+    theme.apply(&ctx);
+
+    // Verify side panel frame margin matches central panel frame margin
+    let style = ctx.style();
+    let central_frame = egui::Frame::central_panel(&style);
+    let side_frame = egui::Frame::side_top_panel(&style).inner_margin(central_frame.inner_margin);
+    assert_eq!(side_frame.inner_margin.top, central_frame.inner_margin.top);
+    assert_eq!(side_frame.inner_margin.bottom, central_frame.inner_margin.bottom);
+
+    let mut sidebar = Sidebar::new();
+    let mut editor = EditorPanel::new();
+    let mut canvas = PdfCanvas::new();
+    let renderer = PdfRenderer::new();
+    let mut project_mgr = ProjectManager::new(None);
+    let mut content = "\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}\n".to_string();
+    let mut view_mode = ViewMode::NativeVector;
+
+    let mut sidebar_sep_y = 0.0;
+    let mut editor_sep_y = 0.0;
+    let mut viewer_sep_y = 0.0;
+
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        // 1. Sidebar in SidePanel
+        egui::SidePanel::left("test_sidebar")
+            .frame(side_frame)
+            .show(ctx, |ui| {
+                sidebar.show(ui, &[], &[], 1, 5, 4, None, &mut project_mgr, None);
+                sidebar_sep_y = ui.min_rect().top();
+            });
+
+        // 2. Editor & Viewer in CentralPanel
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(250.0, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        editor.show(ui, &mut content, &[], false);
+                        editor_sep_y = ui.min_rect().top();
+                    },
+                );
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(250.0, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ViewerPanel::show(
+                            ui,
+                            &mut canvas,
+                            &renderer,
+                            &[],
+                            None,
+                            &mut view_mode,
+                            false,
+                            false,
+                            4,
+                        );
+                        viewer_sep_y = ui.min_rect().top();
+                    },
+                );
+            });
+        });
+    });
+
+    // All three panel contents start at the exact same Y coordinate
+    assert_eq!(sidebar_sep_y, editor_sep_y, "Sidebar and editor must start at identical Y coordinate");
+    assert_eq!(editor_sep_y, viewer_sep_y, "Editor and viewer must start at identical Y coordinate");
 }

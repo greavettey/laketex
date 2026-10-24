@@ -55,9 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _api_handle = HeadlessServer::start_background("127.0.0.1", api_port);
 
     // Launch egui / eframe GUI application
+    let app_icon = laketex::ui::logo::app_icon_data();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Laketex - Lightweight LaTeX Studio")
+            .with_icon(app_icon)
             .with_inner_size([1360.0, 840.0])
             .with_min_inner_size([800.0, 520.0])
             .with_active(true),

@@ -883,6 +883,25 @@ impl MathRenderer {
         number: Option<usize>,
         is_dark: bool,
     ) {
+        Self::render_equation_block_with_zoom(
+            ui,
+            formula,
+            number,
+            is_dark,
+            1.0,
+            ui.available_width(),
+        );
+    }
+
+    /// Renders a display equation centered with optional equation number, scaling with zoom and constrained to page width.
+    pub fn render_equation_block_with_zoom(
+        ui: &mut Ui,
+        formula: &str,
+        number: Option<usize>,
+        is_dark: bool,
+        zoom: f32,
+        content_width: f32,
+    ) {
         let text_color = if is_dark {
             Color32::from_rgb(230, 235, 245)
         } else {
@@ -890,14 +909,15 @@ impl MathRenderer {
         };
 
         ui.horizontal(|ui| {
-            ui.add_space(28.0);
+            ui.set_width(content_width);
+            ui.add_space((16.0 * zoom).max(4.0));
 
             let segments = Self::split_into_segments(formula);
             if segments.is_empty() {
                 let clean_formula = Self::translate_math_symbols(formula);
                 ui.label(
                     egui::RichText::new(&clean_formula)
-                        .font(FontId::proportional(14.5))
+                        .font(FontId::proportional(14.5 * zoom))
                         .color(text_color),
                 );
             } else {
@@ -907,7 +927,7 @@ impl MathRenderer {
                             let clean = Self::translate_math_symbols(t);
                             ui.label(
                                 egui::RichText::new(clean)
-                                    .font(FontId::proportional(14.0))
+                                    .font(FontId::proportional(14.0 * zoom))
                                     .color(text_color),
                             );
                         }
@@ -916,9 +936,9 @@ impl MathRenderer {
                             let mut grid_rect = None;
 
                             ui.horizontal(|ui| {
-                                ui.add_space(8.0);
+                                ui.add_space(8.0 * zoom);
                                 let grid_resp = egui::Grid::new(grid_id)
-                                    .spacing(egui::vec2(14.0, 5.0))
+                                    .spacing(egui::vec2(14.0 * zoom, 5.0 * zoom))
                                     .show(ui, |ui| {
                                         for row in rows {
                                             for cell in row {
@@ -926,7 +946,7 @@ impl MathRenderer {
                                                     let clean_cell = Self::translate_math_symbols(cell);
                                                     ui.label(
                                                         egui::RichText::new(clean_cell)
-                                                            .font(FontId::proportional(13.0))
+                                                            .font(FontId::proportional(13.0 * zoom))
                                                             .italics()
                                                             .color(text_color),
                                                     );
@@ -936,17 +956,17 @@ impl MathRenderer {
                                         }
                                     });
                                 grid_rect = Some(grid_resp.response.rect);
-                                ui.add_space(8.0);
+                                ui.add_space(8.0 * zoom);
                             });
 
                             if let Some(rect) = grid_rect {
                                 let painter = ui.painter();
-                                let stroke = egui::Stroke::new(1.4_f32, text_color);
-                                let top_y = rect.top() - 2.0;
-                                let bot_y = rect.bottom() + 2.0;
-                                let left_x = rect.left() - 5.0;
-                                let right_x = rect.right() + 5.0;
-                                let cap = 5.0;
+                                let stroke = egui::Stroke::new(1.4_f32 * zoom.max(0.7), text_color);
+                                let top_y = rect.top() - 2.0 * zoom;
+                                let bot_y = rect.bottom() + 2.0 * zoom;
+                                let left_x = rect.left() - 5.0 * zoom;
+                                let right_x = rect.right() + 5.0 * zoom;
+                                let cap = 5.0 * zoom;
 
                                 match env.as_str() {
                                     "bmatrix" => {
@@ -966,7 +986,7 @@ impl MathRenderer {
                                             let t1 = (i + 1) as f32 / arc_samples as f32;
                                             let eval_left = |t: f32| -> egui::Pos2 {
                                                 let u = 1.0 - t;
-                                                let x = u * u * (left_x + 2.0) + 2.0 * u * t * (left_x - 3.0) + t * t * (left_x + 2.0);
+                                                let x = u * u * (left_x + 2.0 * zoom) + 2.0 * u * t * (left_x - 3.0 * zoom) + t * t * (left_x + 2.0 * zoom);
                                                 let y = u * u * top_y + 2.0 * u * t * mid_y + t * t * bot_y;
                                                 egui::pos2(x, y)
                                             };
@@ -974,7 +994,7 @@ impl MathRenderer {
 
                                             let eval_right = |t: f32| -> egui::Pos2 {
                                                 let u = 1.0 - t;
-                                                let x = u * u * (right_x - 2.0) + 2.0 * u * t * (right_x + 3.0) + t * t * (right_x - 2.0);
+                                                let x = u * u * (right_x - 2.0 * zoom) + 2.0 * u * t * (right_x + 3.0 * zoom) + t * t * (right_x - 2.0 * zoom);
                                                 let y = u * u * top_y + 2.0 * u * t * mid_y + t * t * bot_y;
                                                 egui::pos2(x, y)
                                             };
@@ -986,17 +1006,17 @@ impl MathRenderer {
                                         painter.line_segment([egui::pos2(right_x, top_y), egui::pos2(right_x, bot_y)], stroke);
                                     }
                                     "Vmatrix" => {
-                                        painter.line_segment([egui::pos2(left_x - 1.5, top_y), egui::pos2(left_x - 1.5, bot_y)], stroke);
-                                        painter.line_segment([egui::pos2(left_x + 1.5, top_y), egui::pos2(left_x + 1.5, bot_y)], stroke);
-                                        painter.line_segment([egui::pos2(right_x - 1.5, top_y), egui::pos2(right_x - 1.5, bot_y)], stroke);
-                                        painter.line_segment([egui::pos2(right_x + 1.5, top_y), egui::pos2(right_x + 1.5, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(left_x - 1.5 * zoom, top_y), egui::pos2(left_x - 1.5 * zoom, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(left_x + 1.5 * zoom, top_y), egui::pos2(left_x + 1.5 * zoom, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x - 1.5 * zoom, top_y), egui::pos2(right_x - 1.5 * zoom, bot_y)], stroke);
+                                        painter.line_segment([egui::pos2(right_x + 1.5 * zoom, top_y), egui::pos2(right_x + 1.5 * zoom, bot_y)], stroke);
                                     }
                                     "Bmatrix" => {
                                         let mid_y = (top_y + bot_y) * 0.5;
                                         painter.line_segment([egui::pos2(left_x, top_y), egui::pos2(left_x, bot_y)], stroke);
-                                        painter.circle_filled(egui::pos2(left_x - 2.0, mid_y), 1.5, text_color);
+                                        painter.circle_filled(egui::pos2(left_x - 2.0 * zoom, mid_y), 1.5 * zoom, text_color);
                                         painter.line_segment([egui::pos2(right_x, top_y), egui::pos2(right_x, bot_y)], stroke);
-                                        painter.circle_filled(egui::pos2(right_x + 2.0, mid_y), 1.5, text_color);
+                                        painter.circle_filled(egui::pos2(right_x + 2.0 * zoom, mid_y), 1.5 * zoom, text_color);
                                     }
                                     _ => {}
                                 }
@@ -1008,10 +1028,10 @@ impl MathRenderer {
 
             if let Some(num) = number {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(20.0);
+                    ui.add_space((16.0 * zoom).max(4.0));
                     ui.label(
                         egui::RichText::new(format!("({num})"))
-                            .font(FontId::proportional(12.5))
+                            .font(FontId::proportional(12.5 * zoom))
                             .color(Color32::from_gray(140)),
                     );
                 });

@@ -8,7 +8,7 @@ use crate::engine::ast::*;
 use crate::engine::layout::{ElementKind, TypesetPage};
 use crate::engine::math::MathRenderer;
 use crate::viewer::PdfColorMode;
-use egui::{vec2, Color32, FontId, Rect, RichText, Stroke, Ui};
+use egui::{vec2, Color32, FontId, Rect, RichText, Stroke, TextFormat, Ui};
 
 /// Direct vector canvas renderer for native typeset pages.
 pub struct NativePageRenderer;
@@ -41,6 +41,9 @@ impl NativePageRenderer {
     ) -> Option<usize> {
         let display_width = page.width * zoom;
         let display_height = page.height * zoom;
+        let margin_zoom = page.margin * zoom;
+        let content_width = (display_width - margin_zoom * 2.0).max(100.0);
+        let content_height = (display_height - margin_zoom * 2.0).max(100.0);
 
         let (paper_bg, text_color, line_color) = match color_mode {
             PdfColorMode::AcademicDark => (
@@ -62,38 +65,60 @@ impl NativePageRenderer {
         let is_dark = color_mode.is_dark();
 
         let mut double_clicked_line = None;
-
-        let margin_i8 = ((page.margin * zoom) as i32).clamp(0, 120) as i8;
+        let margin_i8 = (margin_zoom as i32).clamp(0, 120) as i8;
 
         // Outer page container with drop shadow
+        let shadow = egui::epaint::Shadow {
+            offset: [2, 4],
+            blur: 10,
+            spread: 1,
+            color: if is_dark {
+                Color32::from_black_alpha(90)
+            } else {
+                Color32::from_black_alpha(35)
+            },
+        };
+
         let frame_response = egui::Frame::new()
             .fill(paper_bg)
+            .shadow(shadow)
             .stroke(Stroke::new(1.0_f32, line_color))
             .inner_margin(egui::Margin::symmetric(margin_i8, margin_i8))
             .show(ui, |ui| {
-                ui.set_width(display_width - (page.margin * 2.0 * zoom));
-                ui.set_min_height(display_height - (page.margin * 2.0 * zoom));
+                ui.set_width(content_width);
+                ui.set_max_width(content_width);
+                ui.set_min_height(content_height);
 
                 for element in &page.elements {
                     match &element.kind {
                         ElementKind::Title { text, font_size } => {
                             ui.vertical_centered(|ui| {
-                                ui.label(
-                                    RichText::new(text)
-                                        .font(FontId::proportional(*font_size * zoom))
-                                        .strong()
-                                        .color(text_color),
+                                let clean = text.replace(r"\\", "\n");
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&clean)
+                                            .font(FontId::proportional(*font_size * zoom))
+                                            .strong()
+                                            .color(text_color),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Wrap),
                                 );
                             });
+                            ui.add_space(4.0 * zoom);
                         }
                         ElementKind::Author { text, font_size } => {
                             ui.vertical_centered(|ui| {
-                                ui.label(
-                                    RichText::new(text)
-                                        .font(FontId::proportional(*font_size * zoom))
-                                        .color(text_color),
+                                let clean = text.replace(r"\\", "\n");
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&clean)
+                                            .font(FontId::proportional(*font_size * zoom))
+                                            .color(text_color),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Wrap),
                                 );
                             });
+                            ui.add_space(2.0 * zoom);
                         }
                         ElementKind::Date { text, font_size } => {
                             ui.vertical_centered(|ui| {
@@ -103,6 +128,7 @@ impl NativePageRenderer {
                                         .color(Color32::from_gray(140)),
                                 );
                             });
+                            ui.add_space(6.0 * zoom);
                         }
                         ElementKind::Divider => {
                             ui.add_space(4.0 * zoom);
@@ -118,9 +144,20 @@ impl NativePageRenderer {
                                         .color(text_color),
                                 );
                             });
-                            ui.indent("abstract_indent", |ui| {
-                                Self::render_inline_spans(ui, spans, is_dark, zoom, 10.5);
+                            ui.add_space(3.0 * zoom);
+                            let indent = (24.0 * zoom).min(content_width * 0.15);
+                            let abs_width = (content_width - indent * 2.0).max(80.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(indent);
+                                ui.allocate_ui_with_layout(
+                                    vec2(abs_width, 0.0),
+                                    egui::Layout::top_down(egui::Align::LEFT),
+                                    |ui| {
+                                        Self::render_inline_spans(ui, spans, is_dark, zoom, 10.5, abs_width);
+                                    },
+                                );
                             });
+                            ui.add_space(6.0 * zoom);
                         }
                         ElementKind::Heading {
                             level,
@@ -140,13 +177,23 @@ impl NativePageRenderer {
                             if *level <= 2 {
                                 text = text.strong();
                             }
-                            ui.label(text);
+                            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Wrap));
+                            ui.add_space(3.0 * zoom);
                         }
                         ElementKind::Paragraph(spans) => {
-                            Self::render_inline_spans(ui, spans, is_dark, zoom, 11.0);
+                            Self::render_inline_spans(ui, spans, is_dark, zoom, 11.0, content_width);
+                            ui.add_space(5.0 * zoom);
                         }
                         ElementKind::Equation { formula, number } => {
-                            MathRenderer::render_equation_block(ui, formula, *number, is_dark);
+                            MathRenderer::render_equation_block_with_zoom(
+                                ui,
+                                formula,
+                                *number,
+                                is_dark,
+                                zoom,
+                                content_width,
+                            );
+                            ui.add_space(4.0 * zoom);
                         }
                         ElementKind::List { ordered, items } => {
                             for (idx, item_spans) in items.iter().enumerate() {
@@ -156,15 +203,24 @@ impl NativePageRenderer {
                                     } else {
                                         "• ".to_string()
                                     };
-                                    ui.label(
+                                    let bullet_lbl = ui.label(
                                         RichText::new(bullet)
                                             .font(FontId::proportional(11.0 * zoom))
                                             .strong()
                                             .color(text_color),
                                     );
-                                    Self::render_inline_spans(ui, item_spans, is_dark, zoom, 11.0);
+                                    let list_item_width = (content_width - bullet_lbl.rect.width() - 6.0).max(80.0);
+                                    ui.allocate_ui_with_layout(
+                                        vec2(list_item_width, 0.0),
+                                        egui::Layout::top_down(egui::Align::LEFT),
+                                        |ui| {
+                                            Self::render_inline_spans(ui, item_spans, is_dark, zoom, 11.0, list_item_width);
+                                        },
+                                    );
                                 });
+                                ui.add_space(2.0 * zoom);
                             }
+                            ui.add_space(4.0 * zoom);
                         }
                         ElementKind::Table {
                             caption,
@@ -196,7 +252,7 @@ impl NativePageRenderer {
                                         for row in rows {
                                             for cell in &row.cells {
                                                 Self::render_inline_spans(
-                                                    ui, cell, is_dark, zoom, 10.5,
+                                                    ui, cell, is_dark, zoom, 10.5, 200.0 * zoom,
                                                 );
                                             }
                                             ui.end_row();
@@ -217,6 +273,7 @@ impl NativePageRenderer {
                                     );
                                 }
                             });
+                            ui.add_space(6.0 * zoom);
                         }
                         ElementKind::Figure {
                             caption,
@@ -262,6 +319,7 @@ impl NativePageRenderer {
                                     }
                                 }
                             });
+                            ui.add_space(6.0 * zoom);
                         }
                         ElementKind::CodeBlock { language, code } => {
                             let line_tokens_list = crate::engine::syntax::SyntaxHighlighter::tokenize_for_ui(code, language, is_dark);
@@ -303,6 +361,7 @@ impl NativePageRenderer {
                                         }
                                     });
                                 });
+                            ui.add_space(6.0 * zoom);
                         }
                         ElementKind::Space(amt) => {
                             ui.add_space(*amt * zoom);
@@ -310,7 +369,7 @@ impl NativePageRenderer {
                     }
                 }
 
-                // Page footer: Page X of Y
+                // Page footer: — Page X —
                 ui.add_space(16.0 * zoom);
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -321,7 +380,7 @@ impl NativePageRenderer {
                 });
             });
 
-        // Double click detection on Native page
+        // Double click detection on Native page for backward SyncTeX
         let page_rect: Rect = frame_response.response.rect;
         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
             if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
@@ -337,101 +396,193 @@ impl NativePageRenderer {
         double_clicked_line
     }
 
+    /// Constructs a wrapped `egui::text::LayoutJob` from inline spans for rich typographic layout.
+    pub fn build_layout_job(
+        spans: &[InlineSpan],
+        is_dark: bool,
+        zoom: f32,
+        base_size: f32,
+        max_width: f32,
+    ) -> egui::text::LayoutJob {
+        let mut job = egui::text::LayoutJob::default();
+        job.wrap.max_width = max_width;
+        job.wrap.break_anywhere = false;
+
+        let normal_color = if is_dark {
+            Color32::from_rgb(220, 225, 235)
+        } else {
+            Color32::from_rgb(25, 30, 40)
+        };
+        let bold_color = if is_dark {
+            Color32::from_rgb(250, 252, 255)
+        } else {
+            Color32::from_rgb(10, 15, 20)
+        };
+        let italic_color = if is_dark {
+            Color32::from_rgb(215, 225, 240)
+        } else {
+            Color32::from_rgb(40, 45, 55)
+        };
+        let code_color = if is_dark {
+            Color32::from_rgb(220, 230, 245)
+        } else {
+            Color32::from_rgb(30, 35, 45)
+        };
+        let code_bg = if is_dark {
+            Color32::from_rgb(40, 45, 55)
+        } else {
+            Color32::from_rgb(240, 242, 246)
+        };
+        let math_color = if is_dark {
+            Color32::from_rgb(242, 163, 101)
+        } else {
+            Color32::from_rgb(180, 80, 0)
+        };
+        let link_color = Color32::from_rgb(97, 175, 239);
+
+        for span in spans {
+            match span {
+                InlineSpan::Text(t) => {
+                    job.append(
+                        t,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(base_size * zoom),
+                            color: normal_color,
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Bold(t) => {
+                    job.append(
+                        t,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional((base_size + 0.2) * zoom),
+                            color: bold_color,
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Italic(t) => {
+                    job.append(
+                        t,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(base_size * zoom),
+                            color: italic_color,
+                            italics: true,
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Code(t) => {
+                    job.append(
+                        t,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::monospace((base_size - 1.0) * zoom),
+                            color: code_color,
+                            background: code_bg,
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Math(m) => {
+                    let clean = MathRenderer::translate_math_symbols(m);
+                    job.append(
+                        &clean,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(base_size * zoom),
+                            color: math_color,
+                            italics: true,
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Colored(c, t) => {
+                    job.append(
+                        t,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(base_size * zoom),
+                            color: *c,
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Url(u) => {
+                    job.append(
+                        u,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(base_size * zoom),
+                            color: link_color,
+                            underline: Stroke::new(1.0_f32, link_color),
+                            ..Default::default()
+                        },
+                    );
+                }
+                InlineSpan::Ref(r) | InlineSpan::Cite(r) => {
+                    let text_to_show = if r.starts_with('[') || r.starts_with('(') {
+                        r.clone()
+                    } else {
+                        format!("[{r}]")
+                    };
+                    job.append(
+                        &text_to_show,
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(base_size * zoom),
+                            color: link_color,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
+
+        job
+    }
+
     fn render_inline_spans(
         ui: &mut Ui,
         spans: &[InlineSpan],
         is_dark: bool,
         zoom: f32,
         base_size: f32,
+        max_width: f32,
     ) {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(3.0, 2.0);
+        if spans.is_empty() {
+            return;
+        }
 
-            for span in spans {
-                match span {
-                    InlineSpan::Text(t) => {
-                        ui.label(
-                            RichText::new(t)
-                                .font(FontId::proportional(base_size * zoom))
-                                .color(if is_dark {
-                                    Color32::from_rgb(220, 225, 235)
-                                } else {
-                                    Color32::from_rgb(25, 30, 40)
-                                }),
-                        );
-                    }
-                    InlineSpan::Bold(t) => {
-                        ui.label(
-                            RichText::new(t)
-                                .font(FontId::proportional(base_size * zoom))
-                                .strong()
-                                .color(if is_dark {
-                                    Color32::from_rgb(240, 245, 255)
-                                } else {
-                                    Color32::from_rgb(10, 15, 20)
-                                }),
-                        );
-                    }
-                    InlineSpan::Italic(t) => {
-                        ui.label(
-                            RichText::new(t)
-                                .font(FontId::proportional(base_size * zoom))
-                                .italics()
-                                .color(if is_dark {
-                                    Color32::from_rgb(215, 225, 240)
-                                } else {
-                                    Color32::from_rgb(40, 45, 55)
-                                }),
-                        );
-                    }
-                    InlineSpan::Code(t) => {
-                        ui.label(
-                            RichText::new(t)
-                                .font(FontId::monospace((base_size - 1.0) * zoom))
-                                .background_color(if is_dark {
-                                    Color32::from_rgb(40, 45, 55)
-                                } else {
-                                    Color32::from_rgb(240, 242, 246)
-                                })
-                                .color(if is_dark {
-                                    Color32::from_rgb(220, 230, 245)
-                                } else {
-                                    Color32::from_rgb(30, 35, 45)
-                                }),
-                        );
-                    }
-                    InlineSpan::Math(m) => {
-                        let clean = MathRenderer::translate_math_symbols(m);
-                        ui.label(
-                            RichText::new(clean)
-                                .font(FontId::proportional(base_size * zoom))
-                                .italics()
-                                .color(if is_dark {
-                                    Color32::from_rgb(242, 163, 101)
-                                } else {
-                                    Color32::from_rgb(180, 80, 0)
-                                }),
-                        );
-                    }
-                    InlineSpan::Colored(c, t) => {
-                        ui.label(
-                            RichText::new(t)
-                                .font(FontId::proportional(base_size * zoom))
-                                .color(*c),
-                        );
-                    }
-                    InlineSpan::Url(u) => {
-                        ui.hyperlink(u);
-                    }
-                    InlineSpan::Ref(r) | InlineSpan::Cite(r) => {
-                        ui.label(
-                            RichText::new(format!("[{r}]"))
-                                .font(FontId::proportional(base_size * zoom))
-                                .color(Color32::from_rgb(97, 175, 239)),
-                        );
-                    }
-                }
-            }
-        });
+        let job = Self::build_layout_job(spans, is_dark, zoom, base_size, max_width);
+        ui.label(job);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_layout_job_wrapping_and_spans() {
+        let spans = vec![
+            InlineSpan::Text("Hello ".to_string()),
+            InlineSpan::Bold("World".to_string()),
+            InlineSpan::Math(r"\alpha + \beta".to_string()),
+            InlineSpan::Code("println!()".to_string()),
+            InlineSpan::Url("https://laketex.org".to_string()),
+            InlineSpan::Ref("sec:intro".to_string()),
+        ];
+
+        let job = NativePageRenderer::build_layout_job(&spans, false, 1.0, 11.0, 450.0);
+        assert_eq!(job.wrap.max_width, 450.0);
+        assert!(!job.wrap.break_anywhere);
+        assert!(job.text.contains("Hello World"));
+        assert!(job.text.contains("α + β"));
+        assert!(job.text.contains("[sec:intro]"));
     }
 }

@@ -9,11 +9,12 @@
 //! - Persistent disk synchronization to `laketex_config.json` alongside the executable
 
 use crate::compiler::engine::EngineKind;
+use crate::t;
 use crate::ui::config::{format_shortcut, AppConfig};
 use crate::ui::theme::ThemeConfig;
 use crate::ui::viewer_panel::ViewMode;
 use crate::viewer::PdfColorMode;
-use egui::{vec2, Color32, Key, RichText, Ui};
+use egui::{vec2, Color32, CornerRadius, Frame, Key, Margin, RichText, Ui};
 
 /// Active category tab within the settings modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,106 +129,172 @@ impl SettingsModal {
         let mut action = SettingsAction::None;
         let mut request_close = false;
         let mut request_save = false;
+        let mut is_open = self.is_open;
 
-        egui::Window::new("⚙ Laketex Settings & Preferences")
+        egui::Window::new("⚙ Settings")
+            .open(&mut is_open)
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
+            .default_size(vec2(760.0, 520.0))
+            .min_size(vec2(660.0, 440.0))
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .fixed_size(vec2(680.0, 480.0))
+            .frame(
+                Frame::window(&ctx.style())
+                    .inner_margin(Margin::same(14))
+                    .corner_radius(CornerRadius::same(6)),
+            )
             .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+
+                let body_height = (ui.available_height() - 44.0).max(340.0);
+
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("⚙").size(24.0));
+                    // Left navigation sidebar
                     ui.vertical(|ui| {
-                        ui.heading("Application Preferences");
+                        ui.set_width(160.0);
+                        ui.set_min_width(160.0);
+                        ui.spacing_mut().item_spacing = vec2(0.0, 4.0);
+
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            crate::ui::logo::render_brand_label(ui, 14.0, ui.visuals().strong_text_color());
+                        });
+                        ui.add_space(4.0);
                         ui.label(
-                            RichText::new("Configurations are saved to laketex_config.json alongside laketex.exe")
-                                .small()
-                                .color(Color32::from_gray(160)),
+                            RichText::new("PREFERENCES")
+                                .size(11.0)
+                                .strong()
+                                .color(ui.visuals().weak_text_color()),
                         );
-                    });
-                });
+                        ui.add_space(4.0);
 
-                ui.separator();
-
-                // Navigation Tabs
-                ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut self.active_tab,
-                        SettingsTab::Appearance,
-                        "🎨 Appearance & Theme",
-                    );
-                    ui.selectable_value(
-                        &mut self.active_tab,
-                        SettingsTab::PdfViewer,
-                        "📄 PDF & Viewer",
-                    );
-                    ui.selectable_value(
-                        &mut self.active_tab,
-                        SettingsTab::Shortcuts,
-                        "⌨ Keyboard Shortcuts",
-                    );
-                    ui.selectable_value(
-                        &mut self.active_tab,
-                        SettingsTab::Compiler,
-                        "⚡ Compiler & Workflow",
-                    );
-                });
-
-                ui.separator();
-
-                // Tab Content Area
-                egui::ScrollArea::vertical()
-                    .max_height(330.0)
-                    .show(ui, |ui| {
-                        match self.active_tab {
-                            SettingsTab::Appearance => {
-                                self.show_appearance_tab(ui, available_themes);
-                            }
-                            SettingsTab::PdfViewer => {
-                                self.show_pdf_viewer_tab(ui);
-                            }
-                            SettingsTab::Shortcuts => {
-                                self.show_shortcuts_tab(ui);
-                            }
-                            SettingsTab::Compiler => {
-                                self.show_compiler_tab(ui);
-                            }
+                        if nav_item(ui, "🎨", "Appearance", self.active_tab == SettingsTab::Appearance) {
+                            self.active_tab = SettingsTab::Appearance;
+                        }
+                        if nav_item(ui, "📄", "PDF & Viewer", self.active_tab == SettingsTab::PdfViewer) {
+                            self.active_tab = SettingsTab::PdfViewer;
+                        }
+                        if nav_item(ui, "⌨", "Shortcuts", self.active_tab == SettingsTab::Shortcuts) {
+                            self.active_tab = SettingsTab::Shortcuts;
+                        }
+                        if nav_item(ui, "⚡", "Compiler", self.active_tab == SettingsTab::Compiler) {
+                            self.active_tab = SettingsTab::Compiler;
                         }
                     });
 
+                    ui.separator();
+
+                    // Right content pane
+                    let right_width = ui.available_width().max(460.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(right_width);
+                        ui.set_min_width(right_width);
+
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings_tab_content_scroll")
+                            .max_height(body_height)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(right_width);
+                                ui.add_space(2.0);
+                                let (title, desc) = match self.active_tab {
+                                    SettingsTab::Appearance => (
+                                        "Appearance & Theme",
+                                        "Configure display language, visual themes, and editor typography.",
+                                    ),
+                                    SettingsTab::PdfViewer => (
+                                        "PDF & Viewer",
+                                        "Set rendering resolution, color inversion grading, and preview modes.",
+                                    ),
+                                    SettingsTab::Shortcuts => (
+                                        "Keyboard Shortcuts",
+                                        "Customize hotkeys for rapid document compilation and editing.",
+                                    ),
+                                    SettingsTab::Compiler => (
+                                        "Compiler & Workflow",
+                                        "Manage default typesetting engine and live compilation automation.",
+                                    ),
+                                };
+
+                                ui.heading(title);
+                                ui.label(
+                                    RichText::new(desc)
+                                        .small()
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                                ui.add_space(6.0);
+                                ui.separator();
+                                ui.add_space(8.0);
+
+                                match self.active_tab {
+                                    SettingsTab::Appearance => {
+                                        self.show_appearance_tab(ui, available_themes);
+                                    }
+                                    SettingsTab::PdfViewer => {
+                                        self.show_pdf_viewer_tab(ui);
+                                    }
+                                    SettingsTab::Shortcuts => {
+                                        self.show_shortcuts_tab(ui);
+                                    }
+                                    SettingsTab::Compiler => {
+                                        self.show_compiler_tab(ui);
+                                    }
+                                }
+                            });
+                    });
+                });
+
                 ui.separator();
+                ui.add_space(4.0);
 
-                // Status Message Feedback
-                if let Some(msg) = &self.status_message {
-                    ui.colored_label(Color32::from_rgb(152, 195, 121), msg);
-                }
-
-                // Modal Footer Actions
+                // Modal Footer
                 ui.horizontal(|ui| {
-                    if ui.button("↺ Reset All to Defaults").clicked() {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+
+                    if ui
+                        .button("↺ Reset All")
+                        .on_hover_text("Reset all settings to default values")
+                        .clicked()
+                    {
                         self.draft_config = AppConfig::default();
                         self.capturing_target = None;
-                        self.status_message = Some("Reset all settings to default values".to_string());
+                        self.status_message =
+                            Some("Reset all settings to default values".to_string());
+                    }
+
+                    if let Some(msg) = &self.status_message {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(msg)
+                                .small()
+                                .color(Color32::from_rgb(152, 195, 121)),
+                        );
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(
-                                RichText::new("✓ Save & Apply")
-                                    .strong()
-                                    .color(Color32::WHITE),
-                            )
-                            .clicked()
-                        {
+                        let save_btn = egui::Button::new(
+                            RichText::new("✓ Save & Apply").strong(),
+                        )
+                        .min_size(vec2(110.0, 26.0))
+                        .fill(ui.visuals().selection.bg_fill);
+
+                        if ui.add(save_btn).clicked() {
                             request_save = true;
                         }
 
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add(egui::Button::new("Cancel").min_size(vec2(75.0, 26.0)))
+                            .clicked()
+                        {
                             request_close = true;
                         }
                     });
                 });
             });
+
+        if !is_open {
+            request_close = true;
+        }
 
         if request_save {
             match self.draft_config.save() {
@@ -293,340 +360,448 @@ impl SettingsModal {
     }
 
     fn show_appearance_tab(&mut self, ui: &mut Ui, available_themes: &[ThemeConfig]) {
-        ui.label(RichText::new("Interface Language").strong());
-        ui.label(
-            RichText::new("Select application display language. Translations are loaded from locales/*.json.")
-                .small()
-                .color(Color32::from_gray(160)),
+        setting_card(
+            ui,
+            "Interface Language",
+            "Application display language (translations from locales/*.json)",
+            |ui| {
+                let available_langs = crate::i18n::available_locales();
+                let current_display = available_langs
+                    .iter()
+                    .find(|(code, _)| code == &self.draft_config.language)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| self.draft_config.language.clone());
+
+                egui::ComboBox::from_id_salt("settings_language_select")
+                    .selected_text(current_display)
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for (code, name) in available_langs {
+                            let is_selected = self.draft_config.language == code;
+                            if ui.selectable_label(is_selected, &name).clicked() {
+                                self.draft_config.language = code.clone();
+                                crate::i18n::set_locale(&code);
+                            }
+                        }
+                    });
+            },
         );
-        ui.add_space(4.0);
 
-        let available_langs = crate::i18n::available_locales();
-        let current_display = available_langs
-            .iter()
-            .find(|(code, _)| code == &self.draft_config.language)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| self.draft_config.language.clone());
+        ui.add_space(6.0);
 
-        egui::ComboBox::from_id_salt("settings_language_select")
-            .selected_text(current_display)
-            .width(260.0)
-            .show_ui(ui, |ui| {
-                for (code, name) in available_langs {
-                    let is_selected = self.draft_config.language == code;
-                    if ui.selectable_label(is_selected, &name).clicked() {
-                        self.draft_config.language = code.clone();
-                        crate::i18n::set_locale(&code);
-                    }
-                }
-            });
-
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        ui.label(RichText::new("Theme & Visual Style").strong());
-        ui.label(
-            RichText::new("Select a default color theme. Custom themes placed in the themes/ directory appear here.")
-                .small()
-                .color(Color32::from_gray(160)),
+        setting_card(
+            ui,
+            "Color Theme",
+            "UI and syntax highlighting theme (custom themes from themes/)",
+            |ui| {
+                egui::ComboBox::from_id_salt("settings_theme_select")
+                    .selected_text(&self.draft_config.theme_name)
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for theme in available_themes {
+                            let is_selected = self.draft_config.theme_name == theme.name;
+                            if ui.selectable_label(is_selected, theme.name()).clicked() {
+                                self.draft_config.theme_name = theme.name.clone();
+                            }
+                        }
+                    });
+            },
         );
-        ui.add_space(4.0);
 
-        egui::ComboBox::from_id_salt("settings_theme_select")
-            .selected_text(&self.draft_config.theme_name)
-            .width(260.0)
-            .show_ui(ui, |ui| {
-                for theme in available_themes {
-                    let is_selected = self.draft_config.theme_name == theme.name;
-                    if ui.selectable_label(is_selected, theme.name()).clicked() {
-                        self.draft_config.theme_name = theme.name.clone();
-                    }
-                }
-            });
+        ui.add_space(6.0);
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        ui.label(RichText::new("Editor Typography").strong());
-        ui.horizontal(|ui| {
-            ui.label("Editor Font Size:");
-            ui.add(
-                egui::Slider::new(&mut self.draft_config.font_size, 10.0..=24.0)
-                    .suffix(" pt")
-                    .step_by(0.5),
-            );
-        });
+        setting_card(
+            ui,
+            "Editor Font Size",
+            "Base typography size for LaTeX source code editor",
+            |ui| {
+                ui.add(
+                    egui::Slider::new(&mut self.draft_config.font_size, 10.0..=24.0)
+                        .suffix(" pt")
+                        .step_by(0.5),
+                );
+            },
+        );
     }
 
     fn show_pdf_viewer_tab(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Default PDF Render Color Mode").strong());
-        ui.label(
-            RichText::new("Configure the color grading applied to compiled PDF pages.")
-                .small()
-                .color(Color32::from_gray(160)),
+        setting_card_vertical(
+            ui,
+            "Default PDF Color Mode",
+            "Color grading applied to compiled PDF pages",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+                    for mode in PdfColorMode::all() {
+                        let selected = self.draft_config.pdf_color_mode == mode;
+                        let icon = match mode {
+                            PdfColorMode::Normal => "☀",
+                            PdfColorMode::AcademicDark => "🌙",
+                            PdfColorMode::Sepia => "📜",
+                        };
+                        let label = format!("{icon} {}", mode.localized_name());
+                        if segmented_button(ui, &label, selected) {
+                            self.draft_config.pdf_color_mode = mode;
+                        }
+                    }
+                });
+
+                ui.add_space(4.0);
+                let mode = self.draft_config.pdf_color_mode;
+                let icon = match mode {
+                    PdfColorMode::Normal => "☀",
+                    PdfColorMode::AcademicDark => "🌙",
+                    PdfColorMode::Sepia => "📜",
+                };
+                let active_desc = format!("{icon} {} — {}", mode.localized_name(), mode.localized_description());
+                ui.label(
+                    RichText::new(active_desc)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            },
         );
-        ui.add_space(4.0);
 
-        for mode in PdfColorMode::all() {
-            let selected = self.draft_config.pdf_color_mode == mode;
-            let text = match mode {
-                PdfColorMode::Normal => "☀ Daylight — High contrast white paper with black text",
-                PdfColorMode::AcademicDark => "🌙 Academic Dark — Inverted RGB with low blue light fatigue",
-                PdfColorMode::Sepia => "📜 Sepia Eye-Care — Soothing warm parchment with dark sepia ink",
-            };
-            if ui.selectable_label(selected, text).clicked() {
-                self.draft_config.pdf_color_mode = mode;
-            }
-        }
+        ui.add_space(6.0);
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
+        setting_card_vertical(
+            ui,
+            "PDF Rasterization Resolution",
+            "Target pixel width for PDFium rendering. Higher values produce sharper math formulas.",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+                    let presets = [
+                        ("Compact (800px)", 800),
+                        ("Standard (1200px)", 1200),
+                        ("Retina (1600px)", 1600),
+                        ("Ultra HD (2000px)", 2000),
+                    ];
+                    for (label, val) in presets {
+                        let is_active = self.draft_config.pdf_render_width == val;
+                        if segmented_button(ui, label, is_active) {
+                            self.draft_config.pdf_render_width = val;
+                        }
+                    }
+                });
 
-        ui.label(RichText::new("Default PDF Rasterization Resolution").strong());
-        ui.label(
-            RichText::new("Controls target pixel width for PDFium rendering. Higher values give razor-sharp formulas.")
-                .small()
-                .color(Color32::from_gray(160)),
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Custom width:")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.draft_config.pdf_render_width, 600..=3000)
+                            .suffix(" px")
+                            .step_by(50.0),
+                    );
+                });
+            },
         );
-        ui.add_space(4.0);
 
-        ui.horizontal(|ui| {
-            if ui.button("Compact (800px)").clicked() {
-                self.draft_config.pdf_render_width = 800;
-            }
-            if ui.button("Standard (1200px)").clicked() {
-                self.draft_config.pdf_render_width = 1200;
-            }
-            if ui.button("Retina (1600px)").clicked() {
-                self.draft_config.pdf_render_width = 1600;
-            }
-            if ui.button("Ultra HD (2000px)").clicked() {
-                self.draft_config.pdf_render_width = 2000;
-            }
-        });
+        ui.add_space(6.0);
 
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Resolution Base Width:");
-            ui.add(
-                egui::Slider::new(&mut self.draft_config.pdf_render_width, 600..=3000)
-                    .suffix(" px")
-                    .step_by(50.0),
-            );
-        });
+        setting_card(
+            ui,
+            "Default Preview Mode",
+            "Initial viewer rendering pipeline on document open",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+                    let is_pdf = self.draft_config.view_mode == ViewMode::PdfRaster;
+                    let is_native = self.draft_config.view_mode == ViewMode::NativeVector;
+                    if segmented_button(ui, &t!("viewer.pdf_view"), is_pdf) {
+                        self.draft_config.view_mode = ViewMode::PdfRaster;
+                    }
+                    if segmented_button(ui, &t!("viewer.native_view"), is_native) {
+                        self.draft_config.view_mode = ViewMode::NativeVector;
+                    }
+                });
+            },
+        );
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(6.0);
 
-        ui.label(RichText::new("Default Preview Mode & Sizing").strong());
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.draft_config.view_mode,
-                ViewMode::NativeVector,
-                "Pure-Rust Native Live View",
-            );
-            ui.selectable_value(
-                &mut self.draft_config.view_mode,
-                ViewMode::PdfRaster,
-                "PDF Vector View",
-            );
-        });
-
-        ui.checkbox(
-            &mut self.draft_config.fit_to_width,
-            "Automatically fit document width to preview pane",
+        setting_card(
+            ui,
+            "Auto-Fit Preview Width",
+            "Automatically scale document width to fit preview pane when opened",
+            |ui| {
+                ui.checkbox(&mut self.draft_config.fit_to_width, "");
+            },
         );
     }
 
     fn show_shortcuts_tab(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Configurable Keyboard Shortcuts").strong());
-        ui.label(
-            RichText::new("Click any shortcut button and press your desired key combination to rebind it.")
-                .small()
-                .color(Color32::from_gray(160)),
-        );
-        ui.add_space(6.0);
-
         let shortcuts_table = [
             (
                 ShortcutTarget::Compile,
                 "Recompile Document",
                 "Triggers background or native typesetting compilation",
-                &self.draft_config.shortcuts.compile.clone(),
+                self.draft_config.shortcuts.compile.clone(),
                 "Ctrl+B",
             ),
             (
                 ShortcutTarget::Save,
                 "Save Document",
                 "Saves current editor content to disk",
-                &self.draft_config.shortcuts.save.clone(),
+                self.draft_config.shortcuts.save.clone(),
                 "Ctrl+S",
             ),
             (
                 ShortcutTarget::Open,
                 "Open File",
                 "Prompts file picker dialog to open .tex document",
-                &self.draft_config.shortcuts.open.clone(),
+                self.draft_config.shortcuts.open.clone(),
                 "Ctrl+O",
             ),
             (
                 ShortcutTarget::NewDoc,
                 "New Document",
                 "Creates a blank default LaTeX template",
-                &self.draft_config.shortcuts.new_doc.clone(),
+                self.draft_config.shortcuts.new_doc.clone(),
                 "Ctrl+N",
             ),
             (
                 ShortcutTarget::ProjectFiles,
-                "Project Files Manager",
+                "Project Files",
                 "Opens Overleaf-style working directory manager",
-                &self.draft_config.shortcuts.project_files.clone(),
+                self.draft_config.shortcuts.project_files.clone(),
                 "Ctrl+P",
             ),
             (
                 ShortcutTarget::Find,
                 "Find in Editor",
                 "Opens search bar with match counts and navigation",
-                &self.draft_config.shortcuts.find.clone(),
+                self.draft_config.shortcuts.find.clone(),
                 "Ctrl+F",
             ),
             (
                 ShortcutTarget::Replace,
                 "Replace in Editor",
                 "Opens search and replace panel",
-                &self.draft_config.shortcuts.replace.clone(),
+                self.draft_config.shortcuts.replace.clone(),
                 "Ctrl+H",
             ),
             (
                 ShortcutTarget::Settings,
                 "Open Settings",
                 "Toggles this preferences modal",
-                &self.draft_config.shortcuts.settings.clone(),
+                self.draft_config.shortcuts.settings.clone(),
                 "Ctrl+,",
             ),
         ];
 
-        egui::Grid::new("shortcuts_grid")
-            .num_columns(4)
-            .spacing([12.0, 8.0])
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label(RichText::new("Action").strong());
-                ui.label(RichText::new("Description").strong());
-                ui.label(RichText::new("Shortcut").strong());
-                ui.label(RichText::new("Reset").strong());
-                ui.end_row();
+        for (target, name, desc, current_val, default_val) in shortcuts_table {
+            setting_card(ui, name, desc, |ui| {
+                let is_modified = current_val != default_val;
+                let is_capturing = self.capturing_target == Some(target);
 
-                for (target, name, desc, current_val, default_val) in shortcuts_table {
-                    ui.label(RichText::new(name).strong());
-                    ui.label(RichText::new(desc).small().color(Color32::from_gray(160)));
+                if ui
+                    .add_enabled(is_modified, egui::Button::new("↺").small())
+                    .on_hover_text(format!("Reset to default ({default_val})"))
+                    .clicked()
+                {
+                    let def_str = default_val.to_string();
+                    match target {
+                        ShortcutTarget::Compile => self.draft_config.shortcuts.compile = def_str,
+                        ShortcutTarget::Save => self.draft_config.shortcuts.save = def_str,
+                        ShortcutTarget::Open => self.draft_config.shortcuts.open = def_str,
+                        ShortcutTarget::NewDoc => self.draft_config.shortcuts.new_doc = def_str,
+                        ShortcutTarget::ProjectFiles => self.draft_config.shortcuts.project_files = def_str,
+                        ShortcutTarget::Find => self.draft_config.shortcuts.find = def_str,
+                        ShortcutTarget::Replace => self.draft_config.shortcuts.replace = def_str,
+                        ShortcutTarget::Settings => self.draft_config.shortcuts.settings = def_str,
+                    }
+                }
 
-                    let is_capturing = self.capturing_target == Some(target);
-                    let btn_text = if is_capturing {
-                        RichText::new("⌛ Press keys...").color(Color32::from_rgb(242, 201, 76)).strong()
+                let btn_text = if is_capturing {
+                    RichText::new("⌛ Press keys...")
+                        .color(Color32::from_rgb(242, 201, 76))
+                        .strong()
+                } else {
+                    RichText::new(&current_val).strong()
+                };
+
+                let mut key_btn = egui::Button::new(btn_text).min_size(vec2(85.0, 24.0));
+                if is_capturing {
+                    key_btn = key_btn.fill(ui.visuals().selection.bg_fill);
+                }
+
+                if ui.add(key_btn).on_hover_text("Click to rebind hotkey (Esc to cancel)").clicked() {
+                    if is_capturing {
+                        self.capturing_target = None;
                     } else {
-                        RichText::new(current_val).color(Color32::from_rgb(97, 175, 239)).strong()
-                    };
-
-                    if ui.button(btn_text).clicked() {
-                        if is_capturing {
-                            self.capturing_target = None;
-                        } else {
-                            self.capturing_target = Some(target);
-                        }
+                        self.capturing_target = Some(target);
                     }
-
-                    if ui.button("Default").clicked() {
-                        let def_str = default_val.to_string();
-                        match target {
-                            ShortcutTarget::Compile => self.draft_config.shortcuts.compile = def_str,
-                            ShortcutTarget::Save => self.draft_config.shortcuts.save = def_str,
-                            ShortcutTarget::Open => self.draft_config.shortcuts.open = def_str,
-                            ShortcutTarget::NewDoc => self.draft_config.shortcuts.new_doc = def_str,
-                            ShortcutTarget::ProjectFiles => self.draft_config.shortcuts.project_files = def_str,
-                            ShortcutTarget::Find => self.draft_config.shortcuts.find = def_str,
-                            ShortcutTarget::Replace => self.draft_config.shortcuts.replace = def_str,
-                            ShortcutTarget::Settings => self.draft_config.shortcuts.settings = def_str,
-                        }
-                    }
-
-                    ui.end_row();
                 }
             });
+
+            ui.add_space(4.0);
+        }
     }
 
     fn show_compiler_tab(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Default Typesetting Engine").strong());
-        ui.label(
-            RichText::new("Choose which LaTeX engine Laketex initializes with on launch.")
-                .small()
-                .color(Color32::from_gray(160)),
-        );
-        ui.add_space(4.0);
-
-        egui::ComboBox::from_id_salt("settings_engine_select")
-            .selected_text(self.draft_config.default_engine.display_name())
-            .width(260.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut self.draft_config.default_engine,
-                    EngineKind::Native,
-                    EngineKind::Native.display_name(),
-                );
-                ui.selectable_value(
-                    &mut self.draft_config.default_engine,
-                    EngineKind::Tectonic,
-                    EngineKind::Tectonic.display_name(),
-                );
-                ui.selectable_value(
-                    &mut self.draft_config.default_engine,
-                    EngineKind::PdfLatex,
-                    EngineKind::PdfLatex.display_name(),
-                );
-                ui.selectable_value(
-                    &mut self.draft_config.default_engine,
-                    EngineKind::XeLatex,
-                    EngineKind::XeLatex.display_name(),
-                );
-                ui.selectable_value(
-                    &mut self.draft_config.default_engine,
-                    EngineKind::LuaLatex,
-                    EngineKind::LuaLatex.display_name(),
-                );
-            });
-
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        ui.label(RichText::new("Engine Status & Packaging").strong());
-        let is_ready = crate::compiler::provisioner::Provisioner::is_tectonic_ready();
-        ui.horizontal(|ui| {
-            ui.label("Tectonic XeTeX:");
-            if is_ready {
-                ui.label(RichText::new("✔ Ready (Embedded)").color(Color32::from_rgb(152, 195, 121)).strong());
-            } else {
-                ui.label(RichText::new("📦 Embedded (Unpacks automatically on first compile)").color(Color32::from_rgb(97, 175, 239)));
-            }
-        });
-        ui.label(
-            RichText::new("Tectonic is compressed and embedded inside laketex.exe. Zero external downloads are required to run the engine.")
-                .small()
-                .color(Color32::from_gray(160)),
+        setting_card(
+            ui,
+            "Default Typesetting Engine",
+            "Initial compiler backend initialized on startup",
+            |ui| {
+                egui::ComboBox::from_id_salt("settings_engine_select")
+                    .selected_text(self.draft_config.default_engine.display_name())
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for engine in [
+                            EngineKind::Native,
+                            EngineKind::Tectonic,
+                            EngineKind::PdfLatex,
+                            EngineKind::XeLatex,
+                            EngineKind::LuaLatex,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.draft_config.default_engine,
+                                engine,
+                                engine.display_name(),
+                            );
+                        }
+                    });
+            },
         );
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(6.0);
 
-        ui.label(RichText::new("Compilation Automation").strong());
-        ui.checkbox(
-            &mut self.draft_config.auto_compile,
-            "Enable live compilation on keystroke edit by default",
+        setting_card(
+            ui,
+            "Tectonic XeTeX Engine",
+            "Tectonic is compressed inside laketex.exe (zero external downloads needed)",
+            |ui| {
+                let is_ready = crate::compiler::provisioner::Provisioner::is_tectonic_ready();
+                if is_ready {
+                    ui.label(
+                        RichText::new("✔ Ready (Embedded)")
+                            .color(Color32::from_rgb(152, 195, 121))
+                            .strong(),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new("📦 Unpacks on first compile")
+                            .color(ui.visuals().selection.stroke.color)
+                            .strong(),
+                    );
+                }
+            },
+        );
+
+        ui.add_space(6.0);
+
+        setting_card(
+            ui,
+            "Live Keystroke Compilation",
+            "Trigger automatic background compilation on document edits",
+            |ui| {
+                ui.checkbox(&mut self.draft_config.auto_compile, "");
+            },
         );
     }
+}
+
+/// Renders a single navigation item in the preferences sidebar.
+fn nav_item(ui: &mut Ui, icon: &str, title: &str, is_selected: bool) -> bool {
+    let text = RichText::new(format!("{icon}  {title}")).size(13.0);
+    let text = if is_selected { text.strong() } else { text };
+
+    let mut btn = egui::Button::new(text).min_size(vec2(ui.available_width(), 32.0));
+
+    if is_selected {
+        btn = btn.fill(ui.visuals().selection.bg_fill);
+    }
+
+    ui.add(btn).clicked()
+}
+
+/// Renders a segmented option button that highlights when active.
+fn segmented_button(ui: &mut Ui, label: &str, is_selected: bool) -> bool {
+    let text = if is_selected {
+        RichText::new(label).strong()
+    } else {
+        RichText::new(label).color(ui.visuals().weak_text_color())
+    };
+    let mut btn = egui::Button::new(text)
+        .min_size(vec2(0.0, 26.0))
+        .corner_radius(CornerRadius::same(4));
+    if is_selected {
+        btn = btn.fill(ui.visuals().selection.bg_fill);
+    }
+    ui.add(btn).clicked()
+}
+
+/// Renders a clean card row with a title, description, and right-aligned control.
+fn setting_card<R>(
+    ui: &mut Ui,
+    title: &str,
+    desc: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    Frame::group(ui.style())
+        .inner_margin(Margin::symmetric(14, 10))
+        .corner_radius(CornerRadius::same(6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let control_width = 200.0;
+                let label_width = (ui.available_width() - control_width - 16.0).max(120.0);
+                ui.allocate_ui_with_layout(
+                    vec2(label_width, 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.label(RichText::new(title).strong().size(13.0));
+                        if !desc.is_empty() {
+                            ui.label(
+                                RichText::new(desc)
+                                    .size(11.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        }
+                    },
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    add_contents(ui)
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
+}
+
+/// Renders a card with a header and a vertical content layout below.
+fn setting_card_vertical<R>(
+    ui: &mut Ui,
+    title: &str,
+    desc: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    Frame::group(ui.style())
+        .inner_margin(Margin::symmetric(14, 10))
+        .corner_radius(CornerRadius::same(6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).strong().size(13.0));
+                if !desc.is_empty() {
+                    ui.label(
+                        RichText::new(desc)
+                            .size(11.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                ui.add_space(8.0);
+                add_contents(ui)
+            })
+            .inner
+        })
+        .inner
 }

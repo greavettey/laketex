@@ -26,7 +26,7 @@
 \maketitle
 
 \begin{abstract}
-Laketex is a lightweight, zero-installation, information-dense \LaTeX\ editor and live typesetting environment written entirely in safe Rust. Packaged as a single self-contained executable under 16 megabytes, it eliminates the need for multi-gigabyte distributions such as \TeX\ Live or MiK\TeX. Laketex features real-time debounced compilation, an instant pure-Rust native typesetter, Tectonic auto-CTAN integration, high-DPI dual-mode vector viewing, SyncTeX bidirectional navigation, a flexible key-value theming engine with user-customizable theme files, and a headless REST API.
+Laketex is a lightweight, zero-installation, information-dense \LaTeX\ editor and live typesetting environment written entirely in safe Rust. Packaged as a self-contained portable executable, it eliminates the need for multi-gigabyte distributions such as \TeX\ Live or MiK\TeX. Laketex features real-time debounced compilation, a bundled cross-platform Tectonic engine as its default typesetter, an instant in-process pure-Rust native engine, high-DPI dual-mode vector viewing (defaulting to PDFium rasterization with internationalized color grading), bidirectional SyncTeX navigation, a working directory project manager, find/replace drawer, a flexible key-value theming engine with user-customizable theme files, and a headless REST API.
 \end{abstract}
 
 \tableofcontents
@@ -62,7 +62,7 @@ The Laketex workspace is organized into five coordinated panels:
         \item \textbf{Metrics}: Word count, character count, and wall-clock compilation benchmarks.
     \end{itemize}
     \item \textbf{Code Editor Panel (Center Left)}: Monospace editing buffer with line numbers, error indicators, syntax highlighting, and auto-indentation.
-    \item \textbf{Live Document Viewer (Center Right)}: Dual-mode canvas supporting instant \textit{Native Vector View} (AST layout) and high-DPI \textit{PDF Vector View} (PDFium rasterization) with academic dark mode inversion.
+    \item \textbf{Live Document Viewer (Center Right)}: Dual-mode canvas supporting the default high-DPI \textit{PDF Vector View} (PDFium rasterization with Daylight White, Academic Dark, and Sepia eye-care modes) and the instant \textit{Native Vector View} (pure-Rust AST layout with word wrapping and equation zoom).
     \item \textbf{Diagnostics Console Drawer (Bottom)}: Slide-up panel displaying structured warnings, compiler output logs, render audit reports, and error export buttons.
 \end{enumerate}
 
@@ -73,8 +73,8 @@ Laketex provides two complementary compilation backends selectable from the top 
 \subsection{Native Pure-Rust Engine (Zero-Install, Instant)}
 The Native engine parses \LaTeX\ into an Abstract Syntax Tree (AST) using a recursive-descent parser written in 100\% safe Rust. It computes box geometry, line breaks, section numbering, and exports clean vector PDFs in under 75 milliseconds. It requires no external executables or internet connection.
 
-\subsection{Tectonic Engine (Auto-CTAN Resource Fetching)}
-When complex packages, bibliography processing, or XeTeX macro extensions are required, Laketex integrates with Tectonic. Tectonic downloads required CTAN style files dynamically into a localized cache without requiring a system \TeX\ installation.
+\subsection{Tectonic Engine (Bundled Default \& Auto-CTAN Fetching)}
+Tectonic serves as the default compilation engine in Laketex, bundled directly across all platforms (Windows, macOS, Linux). It provides full compatibility with standard \LaTeX\ packages, bibliography tools, and XeTeX macro extensions while automatically streaming required CTAN style files on demand into a localized cache without requiring a system \TeX\ distribution.
 
 \begin{table}[htbp]
 \centering
@@ -257,7 +257,7 @@ Laketex includes a headless mode for continuous integration, scripting, and remo
 
 \section{Settings \& Preferences}
 
-Laketex provides a centralized Preferences dialog accessible via \texttt{Ctrl + ,} or the \textbf{⚙ Settings} button in the toolbar. All preferences are automatically persisted to \texttt{laketex\_config.json} alongside \texttt{laketex.exe}:
+Laketex provides a centralized Preferences dialog accessible via \texttt{Ctrl + ,} or the \textbf{Settings} button in the toolbar. All preferences are automatically persisted to \texttt{laketex\_config.json} alongside \texttt{laketex.exe}:
 \begin{itemize}
     \item \textbf{Appearance \& Themes}: Choose default color themes (Dracula JetBrains, Slate Blue, Nord Frost, Paper White, or any custom theme in \texttt{themes/}) and customize the editor font size.
     \item \textbf{PDF \& Viewer Modes}: Set the default color grading (\textit{Daylight White}, \textit{Academic Dark Inverted}, or \textit{Sepia Eye-Care Parchment}) and target raster resolution (\textit{800px Compact}, \textit{1200px Standard}, \textit{1600px Retina}, \textit{2000px Ultra HD}).
@@ -270,7 +270,7 @@ Laketex provides a centralized Preferences dialog accessible via \texttt{Ctrl + 
 You can access and load any of the official Laketex documentation manuals directly as \LaTeX\ files inside this application:
 \begin{enumerate}
     \item Open the \textbf{Left Sidebar} and select the \textbf{Docs} tab.
-    \item Or click the \textbf{📖 Documentation} menu in the top toolbar.
+    \item Or click the \textbf{Documentation} menu in the top toolbar.
     \item Choose any guide (\textit{Welcome Manual}, \textit{Theming Guide}, \textit{API Reference}, or \textit{Architecture}) to load and compile it live!
 \end{enumerate}
 

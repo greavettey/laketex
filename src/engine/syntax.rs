@@ -99,14 +99,37 @@ impl SyntaxHighlighter {
     }
 
     /// Invokes external `pygmentize` process via pipe if installed.
+    ///
+    /// # Arguments
+    /// * `code` - Raw source code snippet to highlight.
+    /// * `language` - Target programming language or lexer identifier.
+    ///
+    /// # Security
+    /// Strictly sanitizes `language` to ASCII alphanumeric characters, `+`, `#`, `-`, and `_`.
+    /// Rejects flags starting with `-` to avoid argument injection, and rejects file paths or
+    /// class separators (such as `path/to/lexer.py:CustomLexer`) that could trigger arbitrary
+    /// Python code execution. Returns `None` if validation fails, safely falling back to native highlighting.
     fn try_pygmentize_html(code: &str, language: &str) -> Option<String> {
-        let lang = if language.is_empty() || language == "code" {
+        let trimmed = language.trim();
+        let lang = if trimmed.is_empty() || trimmed == "code" {
             "text"
         } else {
-            language
+            trimmed
         };
 
-        let mut cmd = crate::create_hidden_command("pygmentize");
+        // Strictly validate language identifier to prevent command injection,
+        // argument injection (e.g. flags starting with '-'), or Pygments custom lexer execution (e.g. 'lexer.py:Custom')
+        if lang.starts_with('-') || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '#' || c == '-' || c == '_') {
+            return None;
+        }
+
+        let pygmentize_cmd = crate::document::packages::PackageManager::find_binary_path("pygmentize")
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "pygmentize".to_string());
+        let mut cmd = crate::create_hidden_command(&pygmentize_cmd);
+        if let Ok(cur_path) = std::env::var("PATH") {
+            cmd.env("PATH", cur_path);
+        }
         cmd.args(["-l", lang, "-f", "html", "-O", "nowrap=True"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

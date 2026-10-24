@@ -47,8 +47,8 @@ impl Default for PdfCanvas {
             current_page: 0,
             total_pages: 1,
             zoom: 1.0,
-            color_mode: PdfColorMode::AcademicDark,
-            invert_colors: true, // Default to sleek academic dark mode
+            color_mode: PdfColorMode::Normal,
+            invert_colors: false, // Default to clean light view
             base_render_width: 1200,
             fit_to_width: true,
             texture: None,
@@ -83,6 +83,12 @@ impl PdfCanvas {
         self.total_pages = 1;
     }
 
+    /// Invalidates cached PDF texture and hash to force re-rasterization on the next frame.
+    pub fn invalidate(&mut self) {
+        self.last_pdf_hash = None;
+        self.texture = None;
+    }
+
     /// Updates color mode and keeps invert_colors in sync.
     pub fn set_color_mode(&mut self, mode: PdfColorMode) {
         if self.color_mode != mode {
@@ -101,14 +107,9 @@ impl PdfCanvas {
 
     /// Computes a lightweight 64-bit hash of PDF bytes to detect changes
     pub fn hash_pdf(bytes: &[u8]) -> u64 {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        bytes.len().hash(&mut hasher);
-        if !bytes.is_empty() {
-            bytes[0].hash(&mut hasher);
-            bytes[bytes.len() / 2].hash(&mut hasher);
-            bytes[bytes.len() - 1].hash(&mut hasher);
-        }
+        hasher.write(bytes);
         hasher.finish()
     }
 
@@ -132,14 +133,8 @@ impl PdfCanvas {
         };
         let target_width = (base_w as f32 * self.zoom.clamp(0.5, 3.0)) as u16;
 
-        // Keep invert_colors and color_mode in sync
-        if self.invert_colors != (self.color_mode == PdfColorMode::AcademicDark) {
-            self.color_mode = if self.invert_colors {
-                PdfColorMode::AcademicDark
-            } else {
-                PdfColorMode::Normal
-            };
-        }
+        // Keep legacy invert_colors synced to the active color_mode
+        self.invert_colors = self.color_mode == PdfColorMode::AcademicDark;
 
         let hash_changed = self.last_pdf_hash != Some(current_hash);
         let page_changed = self.last_rendered_page != Some(self.current_page);
@@ -206,10 +201,10 @@ impl PdfCanvas {
         let available_size = ui.available_size();
         let mut double_clicked_rel_y = None;
 
-        let bg_color = if self.invert_colors {
-            Color32::from_rgb(18, 20, 24)
-        } else {
-            Color32::from_rgb(238, 240, 245)
+        let bg_color = match self.color_mode {
+            PdfColorMode::AcademicDark => Color32::from_rgb(18, 20, 24),
+            PdfColorMode::Sepia => Color32::from_rgb(243, 235, 218),
+            PdfColorMode::Normal => Color32::from_rgb(238, 240, 245),
         };
 
         egui::Frame::NONE

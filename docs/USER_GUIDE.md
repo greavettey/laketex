@@ -24,10 +24,10 @@ To open an existing file directly:
 
 ```
 +-------------------------------------------------------------------------------------------------+
-| [Laketex]  [New] [Open] [Save] | Engine: [Native (Pure Rust) v] | [⚡ Recompile] | Auto: [x]    |
+| [Laketex]  [New] [Open] [Save] | Engine: [Native (Pure Rust) v] | [Recompile] | Auto: [x]    |
 +---------------------+-----------------------------------+---------------------------------------+
 |  OUTLINE / PACKAGES |  LATEX SOURCE CODE                |  LIVE PREVIEW (Page 1/2)  Zoom: 100%  |
-|                     |                                   |  [Native Live View] [PDF Vector View] |
+|                     |                                   |  [PDF Vector View] [Native Vector View] |
 | § 1. Introduction   |  1 | \documentclass{article}      |                                       |
 | § 2. Formulations   |  2 | \title{Quantum Field Note}   |          Quantum Field Note           |
 |   ƒ Eq. (1)         |  3 | \begin{document}             |          Research Group               |
@@ -48,7 +48,7 @@ To open an existing file directly:
 1. **Top Toolbar**:
    - **File Operations**: `New Document`, `Open File...`, `Save Document`, `Save As...`.
    - **Engine Selector Dropdown**: Toggle between `Native (Pure Rust)`, `Tectonic`, `pdfLaTeX`, `XeLaTeX`, or `LuaLaTeX`.
-   - **Recompile Button (`⚡`)**: Forces an immediate full compilation run.
+   - **Recompile Button (`Recompile`)**: Forces an immediate full compilation run.
    - **Auto-Compile Toggle**: Toggles live debounced compilation as you type (default: ON, 180 ms debounce).
    - **Theme Selector Dropdown**: Choose between built-in themes (such as JetBrains Dracula) and custom JSON/YAML themes discovered on disk.
    - **Panel Visibility Buttons**: Toggle the left sidebar and bottom diagnostic drawer on or off.
@@ -62,7 +62,7 @@ To open an existing file directly:
    - **Dual Viewing Modes**:
      - **Native Live View**: 100% pure-Rust instant vector layout. Renders AST vectors directly on canvas in < 1 ms.
      - **PDF Vector View**: Full rasterized view rendered by embedded PDFium.
-   - **Page Navigation**: Click `◀ Prev` and `Next ▶` buttons to navigate multi-page documents.
+   - **Page Navigation**: Click `Prev` and `Next` buttons to navigate multi-page documents.
    - **Dark Mode Inversion**: Automatically adjusts document contrast to academic dark mode or crisp daylight white.
 
 4. **Left Sidebar (Outline & Packages)**:
@@ -74,7 +74,7 @@ To open an existing file directly:
 5. **Bottom Collapsible Drawer**:
    - **Diagnostics**: Displays parsed compiler warnings, errors, line numbers, and file offsets.
    - **Terminal Output**: Raw `stdout` and `stderr` logs for low-level debugging.
-   - **Error Export**: `📋 Copy Report` and `⬇ Export Error Log...` buttons.
+   - **Error Export**: `Copy Report` and `Export Error Log...` buttons.
 
 ---
 
@@ -100,7 +100,7 @@ Laketex includes full forward and reverse synchronization between the source cod
 | `Ctrl + Shift + S` | Save document as a new file |
 | `Ctrl + O` | Open file dialog |
 | `Ctrl + N` | Create a new document |
-| `Ctrl + B` | Force recompile document (`⚡`) |
+| `Ctrl + B` | Force recompile document (`Recompile`) |
 | `Ctrl + \` | Toggle left sidebar visibility |
 | `Ctrl + J` | Toggle bottom diagnostic drawer |
 | `Ctrl + =` / `Ctrl + +` | Zoom in document preview |
@@ -185,15 +185,15 @@ When LaTeX code encounters a syntax error or missing macro, raw TeX logs can oft
 
 ### Exporting Reports from the GUI:
 - Open the bottom **Diagnostics & Logs Drawer** (`Ctrl + J`).
-- Click **`📋 Copy Report`**: Immediately places the complete, beautifully formatted Markdown report on your system clipboard so you can paste it directly into GitHub issues, chat, or documentation.
-- Click **`⬇ Export Error Log...`**: Opens a save dialog to export as a formatted `.md` (Markdown), `.json`, or `.log` file on disk.
+- Click **`Copy Report`**: Immediately places the complete, beautifully formatted Markdown report on your system clipboard so you can paste it directly into GitHub issues, chat, or documentation.
+- Click **`Export Error Log...`**: Opens a save dialog to export as a formatted `.md` (Markdown), `.json`, or `.log` file on disk.
 
 ### Render Audit Tab (Diagnosing Matrices & Math Notation):
-- Click the **`🔍 Render Audit`** tab in the bottom drawer.
+- Click the **`Render Audit`** tab in the bottom drawer.
 - Shows real-time analysis of commands that cause visual degradation or rendering issues in either the Native or Tectonic engines.
-- **Card-Based Inspection**: Each issue displays a badge (`🔴 ERROR`, `🟡 WARN`, `🟣 DEGRADED`), the offending LaTeX command, its category, and a clear statement of **why it isn't rendering correctly**.
+- **Card-Based Inspection**: Each issue displays a badge (`[ERROR]`, `[WARN]`, `[DEGRADED]`), the offending LaTeX command, its category, and a clear statement of **why it isn't rendering correctly**.
 - **Click-to-Jump Navigation**: Click any `Line X` button to jump the editor cursor directly to that line.
-- **Report Sharing**: Use `📋 Copy Audit Report` or `⬇ Export Audit...` to share full Markdown or JSON reports.
+- **Report Sharing**: Use `Copy Audit Report` or `Export Audit...` to share full Markdown or JSON reports.
 
 ---
 

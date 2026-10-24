@@ -106,7 +106,7 @@ impl RenderDebugReport {
         let mut out = String::new();
         out.push_str("======================================================================\n");
         out.push_str(&format!(
-            "🔍 LAKETEX RENDER AUDIT REPORT: {}\n",
+            "LAKETEX RENDER AUDIT REPORT: {}\n",
             self.document_name
         ));
         out.push_str(&format!(
@@ -148,7 +148,7 @@ impl RenderDebugReport {
     /// Formats the report as Markdown for export
     pub fn to_markdown(&self) -> String {
         let mut md = String::new();
-        md.push_str("# 🔍 Laketex LaTeX Render & Preview Audit Report\n\n");
+        md.push_str("# Laketex LaTeX Render & Preview Audit Report\n\n");
         md.push_str(&format!("- **Document**: `{}`\n", self.document_name));
         md.push_str(&format!("- **Timestamp**: {}\n", self.timestamp));
         md.push_str(&format!(
@@ -162,7 +162,7 @@ impl RenderDebugReport {
         md.push_str(&format!("- **PDF Preview**: {}\n\n", self.pdf_status));
 
         if self.issues.is_empty() {
-            md.push_str("> ✅ **All LaTeX commands and math notation render correctly.** No syntax or visual degradation detected.\n");
+            md.push_str("> **All LaTeX commands and math notation render correctly.** No syntax or visual degradation detected.\n");
             return md;
         }
 

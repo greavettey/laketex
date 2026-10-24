@@ -16,6 +16,7 @@ use crate::document::packages::PackageManager;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -102,6 +103,17 @@ impl HeadlessServer {
 
             while running_clone.load(Ordering::SeqCst) {
                 if let Ok(Some(mut request)) = server.recv_timeout(std::time::Duration::from_millis(200)) {
+                    // Security validation: block CSRF, cross-origin browser requests, and DNS rebinding attacks
+                    if let Err((status_code, err_msg)) = validate_request_security(&request) {
+                        let body = serde_json::json!({ "error": err_msg }).to_string();
+                        let content_type = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+                        let response = Response::from_string(body)
+                            .with_status_code(status_code)
+                            .with_header(content_type);
+                        let _ = request.respond(response);
+                        continue;
+                    }
+
                     let url = request.url().to_string();
                     let method = request.method().as_str().to_uppercase();
 
@@ -118,7 +130,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/compile") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<CompileApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -171,7 +183,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/outline") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<SourceApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -186,7 +198,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/packages") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<SourceApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -201,7 +213,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/check") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<SourceApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -240,7 +252,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/debug") | ("POST", "/debug") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<CompileApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -279,7 +291,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/dependencies/check") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<SourceApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -302,7 +314,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/dependencies/install") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             match serde_json::from_str::<InstallDependencyApiRequest>(&body_str) {
                                 Ok(req) => {
@@ -361,7 +373,7 @@ impl HeadlessServer {
                         }
                         ("POST", "/api/docs") => {
                             let mut body_str = String::new();
-                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            let _ = request.as_reader().take(10 * 1024 * 1024).read_to_string(&mut body_str);
 
                             #[derive(Deserialize)]
                             struct DocReq {
@@ -433,4 +445,59 @@ impl HeadlessServer {
             thread::sleep(std::time::Duration::from_secs(1));
         }
     }
+}
+
+/// Validates incoming HTTP requests to protect against Cross-Origin (CORS/CSRF) attacks
+/// and DNS rebinding attacks from web browsers.
+///
+/// # Arguments
+/// * `request` - The incoming HTTP request to inspect.
+///
+/// # Returns
+/// * `Ok(())` if the request satisfies all security invariants.
+/// * `Err((status_code, error_message))` if the request violates security policy.
+///
+/// # Security Policy
+/// - Rejects cross-origin browser requests with external `Origin` headers (`403 Forbidden`).
+/// - Rejects requests containing external `Referer` headers (`403 Forbidden`).
+/// - Enforces that `Host` headers point exclusively to local loopback interfaces (`127.0.0.1`,
+///   `localhost`, `[::1]`) to mitigate DNS rebinding exploits.
+fn validate_request_security(request: &tiny_http::Request) -> std::result::Result<(), (u16, &'static str)> {
+    for header in request.headers() {
+        let field = header.field.as_str().as_str();
+        let value = header.value.as_str();
+
+        // 1. Origin header check: browsers send this on cross-origin requests
+        if field.eq_ignore_ascii_case("origin") {
+            let val_lower = value.to_ascii_lowercase();
+            let is_local = val_lower.starts_with("http://127.0.0.1")
+                || val_lower.starts_with("http://localhost")
+                || val_lower.starts_with("http://[::1]");
+            if !is_local {
+                return Err((403, "Forbidden: Cross-origin browser requests are blocked"));
+            }
+        }
+
+        // 2. Referer header check: if present, must originate from localhost
+        if field.eq_ignore_ascii_case("referer") {
+            let val_lower = value.to_ascii_lowercase();
+            let is_local = val_lower.starts_with("http://127.0.0.1")
+                || val_lower.starts_with("http://localhost")
+                || val_lower.starts_with("http://[::1]");
+            if !is_local {
+                return Err((403, "Forbidden: Untrusted referer header blocked"));
+            }
+        }
+
+        // 3. Host header check: DNS rebinding protection
+        if field.eq_ignore_ascii_case("host") {
+            let host_lower = value.to_ascii_lowercase();
+            let host_part = host_lower.split(':').next().unwrap_or("");
+            let is_valid_host = host_part == "127.0.0.1" || host_part == "localhost" || host_part == "[::1]";
+            if !is_valid_host {
+                return Err((403, "Forbidden: Host header validation failed (DNS rebinding protection)"));
+            }
+        }
+    }
+    Ok(())
 }

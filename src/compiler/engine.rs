@@ -366,7 +366,17 @@ impl CompilerEngine {
             && !source.contains("\\PassOptionsToPackage{draft}{graphicx}")
             && !source.contains("[draft]");
 
+        // If document uses pdfTeX glyphtounicode primitives (\input{glyphtounicode} or \pdfgentounicode),
+        // pre-inject compatibility shims for XeTeX/Tectonic engines where these primitives are not built-in
+        let pre_glyphtounicode = (kind == EngineKind::Tectonic || kind == EngineKind::XeLatex)
+            && (source.contains("glyphtounicode") || source.contains("pdfgentounicode"));
+
         let mut pre_injections = Vec::new();
+        if pre_glyphtounicode {
+            pre_injections.push(
+                "\\makeatletter\\@ifundefined{pdfglyphtounicode}{\\let\\pdfglyphtounicode\\@gobbletwo}{}\\@ifundefined{pdfgentounicode}{\\newcount\\pdfgentounicode}{}\\makeatother"
+            );
+        }
         if pre_draft_minted {
             pre_injections.push("\\PassOptionsToPackage{draft}{minted}");
         }
@@ -384,20 +394,29 @@ impl CompilerEngine {
 
         let mut cmd = crate::create_hidden_command(&engine_path);
         cmd.current_dir(&abs_run_dir);
+        if let Ok(cur_path) = std::env::var("PATH") {
+            cmd.env("PATH", cur_path);
+        }
 
         match kind {
             EngineKind::Tectonic => {
-                cmd.arg("-Z")
-                    .arg("shell-escape")
-                    .arg("-Z")
-                    .arg("continue-on-errors")
-                    .arg("--outdir")
+                cmd.arg("-Z").arg("continue-on-errors");
+                if has_pygmentize && source.contains("minted") {
+                    cmd.arg("-Z").arg("shell-escape");
+                    cmd.arg("-Z").arg(format!("shell-escape-cwd={}", abs_run_dir.display()));
+                }
+                cmd.arg("--outdir")
                     .arg(&abs_run_dir)
                     .arg(&tex_file_path);
             }
             EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
+                let shell_flag = if has_pygmentize && source.contains("minted") {
+                    "-shell-escape"
+                } else {
+                    "-no-shell-escape"
+                };
                 cmd.arg("-interaction=nonstopmode")
-                    .arg("-shell-escape")
+                    .arg(shell_flag)
                     .arg("-output-directory")
                     .arg(&abs_run_dir)
                     .arg(&tex_file_path);
@@ -415,10 +434,11 @@ impl CompilerEngine {
 
         // If compilation failed specifically due to minted or missing pictures, attempt draft fallback
         let combined_log = format!("{stdout}\n{stderr}");
-        let is_minted_failure = (!output.status.success()
-            || !pdf_file_path.exists()
-            || combined_log.contains("failed to execute the shell-escape command")
-            || combined_log.contains("Package minted Error"))
+        let compilation_failed = !output.status.success() || !pdf_file_path.exists();
+        let is_minted_failure = compilation_failed
+            && (combined_log.contains("failed to execute the shell-escape command")
+                || combined_log.contains("Package minted Error")
+                || combined_log.contains("You must invoke LaTeX with the -shell-escape flag"))
             && source.contains("minted")
             && !source.contains("\\PassOptionsToPackage{draft}{minted}")
             && !pre_draft_minted;
@@ -439,6 +459,11 @@ impl CompilerEngine {
 
         if is_minted_failure || is_graphics_failure {
             let mut retry_prefixes = Vec::new();
+            if pre_glyphtounicode {
+                retry_prefixes.push(
+                    "\\makeatletter\\@ifundefined{pdfglyphtounicode}{\\let\\pdfglyphtounicode\\@gobbletwo}{}\\@ifundefined{pdfgentounicode}{\\newcount\\pdfgentounicode}{}\\makeatother"
+                );
+            }
             if is_minted_failure || pre_draft_minted {
                 retry_prefixes.push("\\PassOptionsToPackage{draft}{minted}");
             }
@@ -451,11 +476,12 @@ impl CompilerEngine {
 
             let mut retry_cmd = crate::create_hidden_command(&engine_path);
             retry_cmd.current_dir(&abs_run_dir);
+            if let Ok(cur_path) = std::env::var("PATH") {
+                retry_cmd.env("PATH", cur_path);
+            }
             match kind {
                 EngineKind::Tectonic => {
                     retry_cmd
-                        .arg("-Z")
-                        .arg("shell-escape")
                         .arg("-Z")
                         .arg("continue-on-errors")
                         .arg("--outdir")
@@ -465,7 +491,7 @@ impl CompilerEngine {
                 EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
                     retry_cmd
                         .arg("-interaction=nonstopmode")
-                        .arg("-shell-escape")
+                        .arg("-no-shell-escape")
                         .arg("-output-directory")
                         .arg(&abs_run_dir)
                         .arg(&tex_file_path);
@@ -519,9 +545,14 @@ impl CompilerEngine {
 
                     if is_minted_failure || pre_draft_minted {
                         retry_diags.retain(|d| d.severity != crate::compiler::diagnostic::DiagnosticSeverity::Error);
+                        let minted_msg = if has_pygmentize {
+                            "Package 'minted' compiled in fallback draft mode: Pygments ('pygmentize') was found, but shell-escape execution failed. The document was typeset without syntax highlighting.".to_string()
+                        } else {
+                            "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string()
+                        };
                         retry_diags.push(Diagnostic {
                             severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
-                            message: "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string(),
+                            message: minted_msg,
                             line: None,
                             file: None,
                             details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{minted}'".to_string()),
@@ -569,21 +600,30 @@ impl CompilerEngine {
         if needs_rerun {
             let mut pass2_cmd = crate::create_hidden_command(&engine_path);
             pass2_cmd.current_dir(run_dir);
+            if let Ok(cur_path) = std::env::var("PATH") {
+                pass2_cmd.env("PATH", cur_path);
+            }
             match kind {
                 EngineKind::Tectonic => {
+                    pass2_cmd.arg("-Z").arg("continue-on-errors");
+                    if has_pygmentize && source.contains("minted") {
+                        pass2_cmd.arg("-Z").arg("shell-escape");
+                        pass2_cmd.arg("-Z").arg(format!("shell-escape-cwd={}", abs_run_dir.display()));
+                    }
                     pass2_cmd
-                        .arg("-Z")
-                        .arg("shell-escape")
-                        .arg("-Z")
-                        .arg("continue-on-errors")
                         .arg("--outdir")
                         .arg(run_dir)
                         .arg(&tex_file_path);
                 }
                 EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
+                    let shell_flag = if has_pygmentize && source.contains("minted") {
+                        "-shell-escape"
+                    } else {
+                        "-no-shell-escape"
+                    };
                     pass2_cmd
                         .arg("-interaction=nonstopmode")
-                        .arg("-shell-escape")
+                        .arg(shell_flag)
                         .arg("-output-directory")
                         .arg(run_dir)
                         .arg(&tex_file_path);
@@ -601,8 +641,6 @@ impl CompilerEngine {
 
         let raw_pdf = if pdf_file_path.exists() {
             std::fs::read(&pdf_file_path).ok()
-        } else if final_pdf_path.exists() {
-            std::fs::read(&final_pdf_path).ok()
         } else {
             None
         };

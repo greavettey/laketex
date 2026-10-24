@@ -1,7 +1,8 @@
 //! # Automated Engine & Dependency Provisioner
 //!
 //! Provides automated provisioning for portable compiler engines (e.g., Tectonic).
-//! On Windows, Tectonic is embedded directly within the application binary in compressed form
+//! On supported platforms (Windows x86_64, Linux x86_64, macOS x86_64/ARM64),
+//! Tectonic is embedded directly within the application binary in compressed form
 //! and extracted on demand with zero network downloads.
 
 #![allow(dead_code)]
@@ -11,14 +12,31 @@ use crate::error::{LakeTexError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 static EMBEDDED_TECTONIC_GZ: &[u8] = include_bytes!("../../assets/tectonic.exe.gz");
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+static EMBEDDED_TECTONIC_GZ: &[u8] = include_bytes!("../../assets/tectonic-x86_64-unknown-linux-musl.gz");
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+static EMBEDDED_TECTONIC_GZ: &[u8] = include_bytes!("../../assets/tectonic-x86_64-apple-darwin.gz");
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+static EMBEDDED_TECTONIC_GZ: &[u8] = include_bytes!("../../assets/tectonic-aarch64-apple-darwin.gz");
+
+#[cfg(not(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+)))]
+static EMBEDDED_TECTONIC_GZ: &[u8] = &[];
 
 /// Automatic provisioning manager for portable compiler binaries.
 pub struct Provisioner;
 
 impl Provisioner {
-    /// Official Tectonic release tag used for reference / non-Windows builds
+    /// Official Tectonic release tag used for reference / non-embedded builds
     pub const TECTONIC_RELEASE_TAG: &'static str = "tectonic@0.17.0";
 
     /// URL for prebuilt binary based on operating system architecture (fallback)
@@ -28,7 +46,11 @@ impl Provisioner {
         } else if cfg!(target_os = "linux") {
             Some("https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@0.17.0/tectonic-0.17.0-x86_64-unknown-linux-musl.tar.gz")
         } else if cfg!(target_os = "macos") {
-            Some("https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@0.17.0/tectonic-0.17.0-x86_64-apple-darwin.tar.gz")
+            if cfg!(target_arch = "aarch64") {
+                Some("https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@0.17.0/tectonic-0.17.0-aarch64-apple-darwin.tar.gz")
+            } else {
+                Some("https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@0.17.0/tectonic-0.17.0-x86_64-apple-darwin.tar.gz")
+            }
         } else {
             None
         }
@@ -40,16 +62,21 @@ impl Provisioner {
     }
 
     /// Extracts the embedded Tectonic binary directly into the target path without internet access.
-    #[cfg(windows)]
     pub fn unpack_embedded_tectonic(target_exe: &Path) -> Result<()> {
         use flate2::read::GzDecoder;
         use std::io::{BufWriter, Read, Write};
+
+        if EMBEDDED_TECTONIC_GZ.is_empty() {
+            return Err(LakeTexError::Provisioning(
+                "No embedded Tectonic binary payload available for this target platform".to_string(),
+            ));
+        }
 
         if let Some(parent) = target_exe.parent() {
             fs::create_dir_all(parent).map_err(LakeTexError::Io)?;
         }
 
-        let temp_exe = target_exe.with_extension("exe.tmp");
+        let temp_exe = target_exe.with_extension("tmp");
         {
             let mut decoder = GzDecoder::new(EMBEDDED_TECTONIC_GZ);
             let out_file = fs::File::create(&temp_exe).map_err(LakeTexError::Io)?;
@@ -65,15 +92,36 @@ impl Provisioner {
             writer.flush().map_err(LakeTexError::Io)?;
         }
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&temp_exe) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&temp_exe, perms);
+            }
+        }
+
         if target_exe.exists() {
             let _ = fs::remove_file(target_exe);
         }
         fs::rename(&temp_exe, target_exe).map_err(LakeTexError::Io)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(target_exe) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(target_exe, perms);
+            }
+        }
+
         Ok(())
     }
 
     /// Automatically provisions Tectonic to the local application bin directory.
-    /// On Windows, extracts directly from the embedded compressed binary payload (zero network download).
+    /// Extracts directly from the embedded compressed binary payload if available (zero network download).
     pub fn provision_tectonic<F: Fn(f32, &str)>(progress_callback: F) -> Result<PathBuf> {
         let bin_dir = CompilerEngine::laketex_bin_dir().ok_or_else(|| {
             LakeTexError::Provisioning("Could not determine user cache directory".to_string())
@@ -96,63 +144,103 @@ impl Provisioner {
             }
         }
 
+        // 1. Unpack embedded binary payload (zero network download) if compiled with payload
+        if !EMBEDDED_TECTONIC_GZ.is_empty() {
+            progress_callback(0.3, "Unpacking embedded Tectonic engine (zero-download)...");
+            match Self::unpack_embedded_tectonic(&target_exe) {
+                Ok(()) => {
+                    progress_callback(1.0, "Tectonic engine ready (embedded)");
+                    return Ok(target_exe);
+                }
+                Err(err) => {
+                    eprintln!("[LakeTex Provisioner] Failed to unpack embedded Tectonic: {err}. Falling back to network download...");
+                }
+            }
+        }
+
+        // 2. Network download fallback for non-embedded target architectures
+        let url = Self::get_download_url().ok_or_else(|| {
+            LakeTexError::Provisioning("Unsupported OS / architecture for auto-provisioning".to_string())
+        })?;
+
+        progress_callback(0.1, "Connecting to GitHub Releases...");
+        let temp_archive = bin_dir.join("tectonic_download.tar.gz");
+
+        progress_callback(0.3, "Downloading portable Tectonic engine...");
+        let response = ureq::get(url)
+            .call()
+            .map_err(|e| LakeTexError::Network(format!("Failed to download Tectonic: {e}")))?;
+
+        let mut reader = response.into_reader();
+        let mut file = fs::File::create(&temp_archive).map_err(LakeTexError::Io)?;
+        std::io::copy(&mut reader, &mut file).map_err(LakeTexError::Io)?;
+        drop(file);
+
+        progress_callback(0.7, "Extracting binary package...");
+        let _ = Self::extract_archive(&temp_archive, &bin_dir)?;
+        let _ = fs::remove_file(&temp_archive);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&target_exe) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&target_exe, perms);
+            }
+        }
+
+        if target_exe.is_file() {
+            progress_callback(1.0, "Tectonic provisioned successfully");
+            Ok(target_exe)
+        } else {
+            Err(LakeTexError::Provisioning(format!(
+                "Tectonic executable not found at {}",
+                target_exe.display()
+            )))
+        }
+    }
+
+    fn extract_archive(archive: &Path, destination: &Path) -> Result<bool> {
         #[cfg(windows)]
         {
-            progress_callback(0.3, "Unpacking embedded Tectonic engine (zero-download)...");
-            Self::unpack_embedded_tectonic(&target_exe)?;
-            progress_callback(1.0, "Tectonic engine ready (embedded)");
-            return Ok(target_exe);
+            // Windows 10/11 includes bsdtar natively which extracts both .zip and .tar.gz
+            let status = crate::create_hidden_command("tar")
+                .arg("-xf")
+                .arg(archive)
+                .arg("-C")
+                .arg(destination)
+                .status();
+
+            match status {
+                Ok(s) if s.success() => Ok(true),
+                _ => {
+                    // Fallback to PowerShell Expand-Archive for zip archives
+                    let ps_status = crate::create_hidden_command("powershell")
+                        .args(["-NoProfile", "-Command", "Expand-Archive", "-Path"])
+                        .arg(archive)
+                        .arg("-DestinationPath")
+                        .arg(destination)
+                        .arg("-Force")
+                        .status();
+                    Ok(ps_status.map(|s| s.success()).unwrap_or(false))
+                }
+            }
         }
 
         #[cfg(not(windows))]
         {
-            let url = Self::get_download_url().ok_or_else(|| {
-                LakeTexError::Provisioning("Unsupported OS for auto-provisioning".to_string())
-            })?;
+            let status = crate::create_hidden_command("tar")
+                .arg("-xf")
+                .arg(archive)
+                .arg("-C")
+                .arg(destination)
+                .status();
 
-            progress_callback(0.1, "Connecting to GitHub Releases...");
-
-            let temp_archive = bin_dir.join("tectonic_download.tar.gz");
-
-            progress_callback(0.3, "Downloading portable Tectonic engine...");
-            let response = ureq::get(url)
-                .call()
-                .map_err(|e| LakeTexError::Network(format!("Failed to download Tectonic: {e}")))?;
-
-            let mut reader = response.into_reader();
-            let mut file = fs::File::create(&temp_archive).map_err(LakeTexError::Io)?;
-            std::io::copy(&mut reader, &mut file).map_err(LakeTexError::Io)?;
-            drop(file);
-
-            progress_callback(0.7, "Extracting binary package...");
-
-            let _ = Self::extract_archive(&temp_archive, &bin_dir)?;
-            let _ = fs::remove_file(&temp_archive);
-
-            if target_exe.is_file() {
-                progress_callback(1.0, "Tectonic provisioned successfully");
-                Ok(target_exe)
-            } else {
-                Err(LakeTexError::Provisioning(format!(
-                    "Tectonic executable not found at {}",
-                    target_exe.display()
-                )))
+            match status {
+                Ok(s) => Ok(s.success()),
+                Err(_) => Ok(false),
             }
-        }
-    }
-
-    #[cfg(not(windows))]
-    fn extract_archive(archive: &Path, destination: &Path) -> Result<bool> {
-        let status = crate::create_hidden_command("tar")
-            .arg("-xf")
-            .arg(archive)
-            .arg("-C")
-            .arg(destination)
-            .status();
-
-        match status {
-            Ok(s) => Ok(s.success()),
-            Err(_) => Ok(false),
         }
     }
 }
@@ -162,14 +250,21 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(windows)]
     fn test_embedded_tectonic_unpack() {
+        if EMBEDDED_TECTONIC_GZ.is_empty() {
+            return;
+        }
         let temp_dir = tempfile::tempdir().unwrap();
-        let target_exe = temp_dir.path().join("tectonic_test.exe");
+        let exe_name = if cfg!(windows) {
+            "tectonic_test.exe"
+        } else {
+            "tectonic_test"
+        };
+        let target_exe = temp_dir.path().join(exe_name);
         let result = Provisioner::unpack_embedded_tectonic(&target_exe);
         assert!(result.is_ok(), "Failed to unpack embedded tectonic: {:?}", result.err());
         assert!(target_exe.is_file());
         let meta = target_exe.metadata().unwrap();
-        assert!(meta.len() > 50_000_000, "Unpacked size was {} bytes, expected >50MB", meta.len());
+        assert!(meta.len() > 20_000_000, "Unpacked size was {} bytes, expected >20MB", meta.len());
     }
 }

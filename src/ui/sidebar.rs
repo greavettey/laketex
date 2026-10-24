@@ -8,7 +8,6 @@
 
 use crate::document::outline::OutlineItem;
 use crate::document::packages::{PackageDependency, PackageInfo, PackageManager};
-use crate::document::{BuiltinDoc, BuiltinDocKind};
 use crate::t;
 use egui::{Color32, RichText, ScrollArea, Ui};
 
@@ -23,8 +22,6 @@ pub enum SidebarTab {
     Packages,
     /// Quick-insert math and symbol snippets
     Snippets,
-    /// Bundled in-app LaTeX documentation manuals
-    Docs,
     /// Word count, character count, and timing metrics
     Metrics,
 }
@@ -58,10 +55,6 @@ pub enum SidebarAction {
     InsertSnippet(String),
     /// Prompt user consent to install missing external tool dependency
     PromptInstallDependency(PackageDependency),
-    /// Load a built-in documentation manual into the active editor
-    LoadBuiltinDoc(BuiltinDocKind),
-    /// Export a built-in documentation manual to disk
-    ExportBuiltinDoc(BuiltinDocKind),
     /// Action emitted from project file manager
     Project(crate::ui::project_manager::ProjectAction),
 }
@@ -88,18 +81,22 @@ impl Sidebar {
     ) -> SidebarAction {
         let mut action = SidebarAction::None;
 
-        ui.vertical(|ui| {
-            // Tab switcher
-            ui.horizontal(|ui| {
+        // Tab switcher header
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), crate::ui::PANEL_HEADER_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_height(crate::ui::PANEL_HEADER_HEIGHT);
+                ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Outline, t!("sidebar.outline"));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Files, format!("📁 {}", t!("sidebar.files")));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Packages, t!("sidebar.packages"));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Snippets, t!("sidebar.snippets"));
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Docs, format!("📖 {}", t!("sidebar.docs")));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Metrics, t!("sidebar.metrics"));
-            });
+            },
+        );
 
-            ui.separator();
+        ui.separator();
 
             ScrollArea::vertical()
                 .id_salt("sidebar_scroll")
@@ -314,50 +311,6 @@ impl Sidebar {
                                 }
                             }
                         }
-                        SidebarTab::Docs => {
-                            ui.label(RichText::new("📖 Built-in LaTeX Manuals").strong().size(13.5));
-                            ui.label(
-                                RichText::new("Full documentation library is embedded inside the Laketex binary. Open directly in editor or export as standalone .tex files.")
-                                    .small()
-                                    .color(Color32::from_gray(160)),
-                            );
-                            ui.add_space(8.0);
-
-                            for doc in BuiltinDoc::all() {
-                                ui.group(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(doc.title)
-                                                .strong()
-                                                .color(Color32::from_rgb(97, 175, 239)),
-                                        );
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.colored_label(Color32::from_gray(140), format!("📄 {}", doc.filename));
-                                        ui.colored_label(
-                                            Color32::from_rgb(152, 195, 121),
-                                            format!("{} lines", doc.content.lines().count()),
-                                        );
-                                    });
-                                    ui.add_space(3.0);
-                                    ui.label(
-                                        RichText::new(doc.description)
-                                            .size(11.5)
-                                            .color(Color32::from_gray(190)),
-                                    );
-                                    ui.add_space(5.0);
-                                    ui.horizontal(|ui| {
-                                        if ui.button("📖 Open in Editor").clicked() {
-                                            action = SidebarAction::LoadBuiltinDoc(doc.kind);
-                                        }
-                                        if ui.button("💾 Export .tex").clicked() {
-                                            action = SidebarAction::ExportBuiltinDoc(doc.kind);
-                                        }
-                                    });
-                                });
-                                ui.add_space(6.0);
-                            }
-                        }
                         SidebarTab::Metrics => {
                             ui.label(RichText::new("Document Metrics").strong());
                             ui.group(|ui| {
@@ -379,10 +332,17 @@ impl Sidebar {
                                 ui.label("Memory: ~25 MB RSS");
                                 ui.label("Architecture: 64-bit Native");
                             });
+
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new("Laketex Studio").strong().size(12.5));
+                                    ui.label(RichText::new("Portable LaTeX Environment").size(10.5).color(Color32::from_gray(140)));
+                                });
+                            });
                         }
                     }
                 });
-        });
 
         action
     }

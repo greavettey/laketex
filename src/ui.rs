@@ -13,6 +13,7 @@
 pub mod config;
 pub mod drawer;
 pub mod editor_panel;
+pub mod logo;
 pub mod project_manager;
 pub mod settings;
 pub mod sidebar;
@@ -27,7 +28,7 @@ use crate::document::{BuiltinDoc, BuiltinDocKind, Document};
 use crate::engine::layout::{DocumentLayout, TypesetPage};
 use crate::engine::parser::NativeLatexParser;
 use crate::ui::config::AppConfig;
-use crate::ui::drawer::{Drawer, DrawerAction};
+use crate::ui::drawer::{Drawer, DrawerAction, DrawerTab};
 use crate::ui::editor_panel::EditorPanel;
 use crate::ui::project_manager::{ProjectAction, ProjectManager};
 use crate::ui::settings::{SettingsAction, SettingsModal};
@@ -41,6 +42,9 @@ use eframe::egui::{self, vec2, Color32, RichText, TopBottomPanel};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
+
+/// Standardized height for panel header menus (sidebar tab bar, editor source view menu, preview pane menu, and top toolbar).
+pub const PANEL_HEADER_HEIGHT: f32 = 25.0;
 
 /// Holds state for user-consented external tool dependency installation.
 pub struct DependencyPromptState {
@@ -125,6 +129,8 @@ pub struct LakeTexApp {
     pub raw_stderr: String,
     /// Compilation duration in milliseconds.
     pub last_duration_ms: Option<u128>,
+    /// Monotonically increasing task identifier of the latest submitted compile job.
+    pub current_compile_task_id: u64,
 
     /// Port of the accompanying background headless REST API server.
     pub api_port: u16,
@@ -196,7 +202,7 @@ impl LakeTexApp {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         // Submit initial compilation in background worker thread
-        compiler.submit_named(
+        let current_compile_task_id = compiler.submit_named(
             document.content.clone(),
             engine,
             Some(initial_working_dir.clone()),
@@ -228,7 +234,11 @@ impl LakeTexApp {
             auto_compile,
             current_theme,
             available_themes,
-            editor_panel: EditorPanel::new(),
+            editor_panel: {
+                let mut ep = EditorPanel::new();
+                ep.font_size = config.font_size;
+                ep
+            },
             sidebar: Sidebar::new(),
             drawer: Drawer::new(),
             project_manager,
@@ -240,6 +250,7 @@ impl LakeTexApp {
             raw_stdout: String::new(),
             raw_stderr: String::new(),
             last_duration_ms: None,
+            current_compile_task_id,
             api_port,
             status_message: "Ready".to_string(),
             dependency_prompt: DependencyPromptState::default(),
@@ -266,25 +277,31 @@ impl LakeTexApp {
     pub fn trigger_compilation(&mut self) {
         self.recompute_native_layout();
 
-        // Check if a Master Document is configured for multi-file projects
-        if let Some(master_path) = self.project_manager.master_document.clone() {
-            if let Some(current_path) = self.document.path.clone() {
-                if current_path != master_path {
-                    // Auto-flush current dirty child file to disk so master document compiles latest edits
-                    if self.document.is_dirty {
-                        let _ = self.document.save_to_file(&current_path);
-                    }
-                    if let Ok(master_source) = std::fs::read_to_string(&master_path) {
-                        let master_dir = master_path.parent().map(|p| p.to_path_buf());
-                        let master_name = master_path.file_name().and_then(|s| s.to_str()).unwrap_or("main.tex");
-                        self.compiler.submit_named(
-                            master_source,
-                            self.engine,
-                            master_dir,
-                            Some(master_name.to_string()),
-                        );
-                        self.status_message = format!("Compiling master [{master_name}]...");
-                        return;
+        // Check if a Master Document is configured for multi-file projects (only applies when editing sub-files without \documentclass)
+        let is_subdocument = !self.document.content.contains("\\documentclass");
+        if is_subdocument {
+            if let Some(master_path) = self.project_manager.master_document.clone() {
+                if let Some(current_path) = self.document.path.clone() {
+                    if current_path != master_path {
+                        // Auto-flush current dirty child file to disk so master document compiles latest edits
+                        if self.document.is_dirty {
+                            let _ = self.document.save_to_file(&current_path);
+                        }
+                        if let Ok(master_source) = std::fs::read_to_string(&master_path) {
+                            let master_dir = master_path.parent().map(|p| p.to_path_buf());
+                            let master_name = master_path.file_name().and_then(|s| s.to_str()).unwrap_or("main.tex");
+                            let id = self.compiler.submit_named(
+                                master_source.clone(),
+                                self.engine,
+                                master_dir,
+                                Some(master_name.to_string()),
+                            );
+                            self.current_compile_task_id = id;
+                            let ast = NativeLatexParser::parse(&master_source);
+                            self.typeset_pages = DocumentLayout::layout_document(&ast);
+                            self.status_message = format!("Compiling master [{master_name}]...");
+                            return;
+                        }
                     }
                 }
             }
@@ -307,14 +324,20 @@ impl LakeTexApp {
                 }
             }
         } else {
-            let work_dir = Some(self.project_manager.root_dir.clone());
+            let work_dir = self
+                .document
+                .path
+                .as_ref()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .or_else(|| Some(self.project_manager.root_dir.clone()));
             let doc_name = Some(self.document.file_name());
-            self.compiler.submit_named(
+            let id = self.compiler.submit_named(
                 self.document.content.clone(),
                 self.engine,
                 work_dir,
                 doc_name,
             );
+            self.current_compile_task_id = id;
             self.status_message = "Compiling...".to_string();
         }
     }
@@ -327,6 +350,7 @@ impl LakeTexApp {
         }
 
         if self.config.shortcuts.matches_compile(ctx) {
+            self.canvas.invalidate();
             self.trigger_compilation();
         }
         if self.config.shortcuts.matches_save(ctx) {
@@ -367,14 +391,21 @@ impl LakeTexApp {
 
     /// Prompts a native file dialog to choose a file path and saves document content.
     pub fn save_document_as(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
+        if let Some(mut path) = rfd::FileDialog::new()
             .add_filter("LaTeX Document", &["tex"])
             .save_file()
         {
+            if path.extension().is_none() {
+                path.set_extension("tex");
+            }
             if let Err(e) = self.document.save_to_file(&path) {
                 self.status_message = format!("Save error: {e}");
             } else {
                 self.status_message = format!("Saved as {}", path.display());
+                if let Some(parent) = path.parent() {
+                    self.project_manager.set_root_dir(parent.to_path_buf());
+                }
+                self.trigger_compilation();
             }
         }
     }
@@ -413,7 +444,9 @@ impl LakeTexApp {
             Ok(doc) => {
                 self.document = doc;
                 self.canvas.reset_cache();
+                self.canvas.current_page = 0;
                 let ast = NativeLatexParser::parse(&self.document.content);
+                self.typeset_pages = DocumentLayout::layout_document(&ast);
                 self.latest_pdf_bytes =
                     crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast)
                         .ok();
@@ -509,7 +542,9 @@ impl LakeTexApp {
     pub fn perform_new_document(&mut self) {
         self.document = Document::default();
         self.canvas.reset_cache();
+        self.canvas.current_page = 0;
         let ast = NativeLatexParser::parse(&self.document.content);
+        self.typeset_pages = DocumentLayout::layout_document(&ast);
         self.latest_pdf_bytes =
             crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
         self.status_message = "New document created".to_string();
@@ -530,7 +565,9 @@ impl LakeTexApp {
         let doc_info = BuiltinDoc::get(kind);
         self.document = Document::new(doc_info.content.to_string(), None);
         self.canvas.reset_cache();
+        self.canvas.current_page = 0;
         let ast = NativeLatexParser::parse(&self.document.content);
+        self.typeset_pages = DocumentLayout::layout_document(&ast);
         self.latest_pdf_bytes =
             crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
         self.status_message = format!("Loaded documentation: {}", doc_info.title);
@@ -648,9 +685,10 @@ impl LakeTexApp {
 
         egui::Window::new("📦 Package Dependency Consent")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
+            .default_width(520.0)
+            .default_height(340.0)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .fixed_size(vec2(500.0, 300.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("📦").size(24.0));
@@ -699,7 +737,8 @@ impl LakeTexApp {
                         );
                     }
 
-                    if dep.installed {
+                    let is_installed = PackageManager::is_binary_available(&dep.binary_name);
+                    if is_installed {
                         ui.colored_label(
                             Color32::from_rgb(152, 195, 121),
                             format!("✓ '{}' is currently installed", dep.binary_name),
@@ -721,7 +760,22 @@ impl LakeTexApp {
 
                 if let Some(status) = &self.dependency_prompt.install_status {
                     ui.add_space(4.0);
-                    ui.colored_label(Color32::from_rgb(242, 201, 76), status);
+                    if status.starts_with("Error:") {
+                        egui::Frame::new()
+                            .fill(Color32::from_rgba_unmultiplied(224, 108, 117, 30))
+                            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(224, 108, 117)))
+                            .corner_radius(4.0)
+                            .inner_margin(6.0)
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .max_height(80.0)
+                                    .show(ui, |ui| {
+                                        ui.colored_label(Color32::from_rgb(224, 108, 117), status);
+                                    });
+                            });
+                    } else {
+                        ui.colored_label(Color32::from_rgb(242, 201, 76), status);
+                    }
                 }
 
                 ui.add_space(8.0);
@@ -756,6 +810,12 @@ impl LakeTexApp {
                         if ui.button("Don't Ask Again").clicked() {
                             user_declined = true;
                             close_modal = true;
+                        }
+
+                        if self.dependency_prompt.install_status.as_ref().map(|s| s.starts_with("Error:")).unwrap_or(false) {
+                            if ui.button("Dismiss").clicked() {
+                                close_modal = true;
+                            }
                         }
                     }
                 });
@@ -895,23 +955,26 @@ impl eframe::App for LakeTexApp {
 
         // Check for completed background compilation results
         if let Some(output) = self.compiler.try_receive() {
-            match output.result {
-                Ok(res) => {
-                    self.last_duration_ms = Some(res.duration_ms);
-                    self.diagnostics = res.diagnostics;
-                    self.raw_stdout = res.stdout;
-                    self.raw_stderr = res.stderr;
+            // Discard stale compilation outputs from prior files or superseded debounce tasks
+            if output.id >= self.current_compile_task_id {
+                match output.result {
+                    Ok(res) => {
+                        self.last_duration_ms = Some(res.duration_ms);
+                        self.diagnostics = res.diagnostics;
+                        self.raw_stdout = res.stdout;
+                        self.raw_stderr = res.stderr;
 
-                    if res.success && res.pdf_bytes.is_some() {
-                        self.latest_pdf_bytes = res.pdf_bytes;
-                        self.status_message = format!("Compiled in {} ms", res.duration_ms);
-                    } else if !res.success {
-                        self.status_message = "Compilation failed with errors".to_string();
+                        if res.success && res.pdf_bytes.is_some() {
+                            self.latest_pdf_bytes = res.pdf_bytes;
+                            self.status_message = format!("Compiled in {} ms", res.duration_ms);
+                        } else if !res.success {
+                            self.status_message = "Compilation failed with errors".to_string();
+                        }
                     }
-                }
-                Err(err_msg) => {
-                    self.status_message = format!("Compile failed: {err_msg}");
-                    self.raw_stderr = err_msg;
+                    Err(err_msg) => {
+                        self.status_message = format!("Compile failed: {err_msg}");
+                        self.raw_stderr = err_msg;
+                    }
                 }
             }
         }
@@ -924,11 +987,13 @@ impl eframe::App for LakeTexApp {
                     self.status_message = "Dependency installed successfully!".to_string();
                     self.dependency_prompt.install_status = Some(msg);
                     self.dependency_prompt.show_modal = false;
+                    self.document.refresh_caches();
                     self.trigger_compilation();
                 }
                 Err(err) => {
-                    self.status_message = "Dependency install failed".to_string();
+                    self.status_message = format!("Dependency install failed: {err}");
                     self.dependency_prompt.install_status = Some(format!("Error: {err}"));
+                    self.dependency_prompt.show_modal = true;
                 }
             }
         }
@@ -959,12 +1024,19 @@ impl eframe::App for LakeTexApp {
         self.handle_shortcuts(ctx);
 
         // 1. Top Toolbar
-        TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
+        let toolbar_frame = egui::Frame::side_top_panel(&ctx.style())
+            .inner_margin(egui::Margin::symmetric(8, 4));
+        TopBottomPanel::top("top_toolbar")
+            .frame(toolbar_frame)
+            .show(ctx, |ui| {
             let error_count = self
                 .diagnostics
                 .iter()
                 .filter(|d| d.severity == crate::compiler::DiagnosticSeverity::Error)
                 .count();
+
+            let prev_engine = self.engine;
+            let prev_color_mode = self.canvas.color_mode;
 
             let action = Toolbar::show(
                 ui,
@@ -980,7 +1052,25 @@ impl eframe::App for LakeTexApp {
                 &mut self.canvas.zoom,
             );
 
+            if self.engine != prev_engine {
+                self.config.default_engine = self.engine;
+                let _ = self.config.save();
+                self.canvas.invalidate();
+                self.trigger_compilation();
+            }
+
+            if self.canvas.color_mode != prev_color_mode {
+                self.config.pdf_color_mode = self.canvas.color_mode;
+                let _ = self.config.save();
+            }
+
+            if action.inspect_errors {
+                self.show_drawer = true;
+                self.drawer.current_tab = DrawerTab::Diagnostics;
+            }
+
             if action.compile_requested {
+                self.canvas.invalidate();
                 self.trigger_compilation();
             }
             if action.new_requested {
@@ -994,9 +1084,6 @@ impl eframe::App for LakeTexApp {
             }
             if action.save_as_requested {
                 self.save_document_as();
-            }
-            if action.project_files_requested {
-                self.project_manager.show_modal = !self.project_manager.show_modal;
             }
             if action.settings_requested {
                 self.settings_modal.open(&self.config);
@@ -1094,10 +1181,13 @@ impl eframe::App for LakeTexApp {
 
         // 4. Collapsible Left Sidebar (Outline, Packages, Snippets)
         if self.show_sidebar {
+            let side_frame = egui::Frame::side_top_panel(&ctx.style())
+                .inner_margin(egui::Margin::symmetric(8, 4));
             egui::SidePanel::left("left_sidebar")
                 .resizable(true)
                 .default_width(240.0)
                 .width_range(160.0..=450.0)
+                .frame(side_frame)
                 .show(ctx, |ui| {
                     let action = self.sidebar.show(
                         ui,
@@ -1135,12 +1225,6 @@ impl eframe::App for LakeTexApp {
                         SidebarAction::PromptInstallDependency(dep) => {
                             self.prompt_dependency_consent(dep);
                         }
-                        SidebarAction::LoadBuiltinDoc(kind) => {
-                            self.load_builtin_doc(kind);
-                        }
-                        SidebarAction::ExportBuiltinDoc(kind) => {
-                            self.export_builtin_doc(kind);
-                        }
                         SidebarAction::Project(project_act) => {
                             self.handle_project_action(ctx, project_act);
                         }
@@ -1150,7 +1234,9 @@ impl eframe::App for LakeTexApp {
         }
 
         // 5. Central Split Area: Code Editor (Left) & Live Document Viewer (Right)
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_frame = egui::Frame::central_panel(&ctx.style())
+            .inner_margin(egui::Margin::symmetric(8, 4));
+        egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| {
             let available_width = ui.available_width();
             let editor_width = (available_width * 0.48).max(300.0);
 
@@ -1174,6 +1260,11 @@ impl eframe::App for LakeTexApp {
                             if self.auto_compile {
                                 self.trigger_compilation();
                             }
+                        }
+
+                        if (self.editor_panel.font_size - self.config.font_size).abs() > 0.01 {
+                            self.config.font_size = self.editor_panel.font_size;
+                            let _ = self.config.save();
                         }
                     },
                 );
@@ -1222,7 +1313,11 @@ impl eframe::App for LakeTexApp {
         // 8. Application Settings & Preferences Modal
         let settings_action = self.settings_modal.show(ctx, &self.available_themes);
         if let SettingsAction::Apply(new_config) = settings_action {
+            let prev_engine = self.engine;
             self.config = new_config;
+            self.engine = self.config.default_engine;
+            self.view_mode = self.config.view_mode;
+            self.editor_panel.font_size = self.config.font_size;
             crate::i18n::set_locale(&self.config.language);
             if let Some(t) = self
                 .available_themes
@@ -1237,6 +1332,10 @@ impl eframe::App for LakeTexApp {
             self.canvas.fit_to_width = self.config.fit_to_width;
             self.auto_compile = self.config.auto_compile;
             self.status_message = "Preferences updated & saved".to_string();
+            if self.engine != prev_engine {
+                self.canvas.invalidate();
+                self.trigger_compilation();
+            }
         }
 
         // 9. Unsaved Changes Confirmation Modal

@@ -14,8 +14,26 @@
 //! - Search/filter files across the project
 
 use egui::{vec2, Color32, RichText, ScrollArea};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
+
+/// Fixed row height in points for virtualized tree rendering.
+pub const ROW_HEIGHT: f32 = 22.0;
+
+/// Maximum directory recursion depth during filesystem scanning to prevent stack overflow.
+pub const MAX_SCAN_DEPTH: usize = 30;
+
+/// Cleans Windows extended length path prefix (`\\?\`) for normalized path comparisons.
+fn dunce_clean_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 
 /// Classification of file types within a LaTeX project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,25 +55,44 @@ pub enum ProjectFileType {
 }
 
 impl ProjectFileType {
-    /// Classifies a path based on filesystem metadata and file extension.
-    pub fn from_path(path: &Path) -> Self {
-        if path.is_dir() {
+    /// Classifies an entry based on its base name string and directory flag with zero heap allocations.
+    pub fn from_name_and_is_dir(name: &str, is_dir: bool) -> Self {
+        if is_dir {
             return Self::Directory;
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-
-        match ext.as_str() {
-            "tex" | "ltx" => Self::Tex,
-            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "pdf" | "eps" => Self::Image,
-            "bib" => Self::Bib,
-            "sty" | "cls" | "cfg" | "dtx" | "ins" => Self::StyleOrConfig,
-            "csv" | "tsv" | "dat" | "json" | "txt" | "yaml" | "yml" => Self::Data,
-            _ => Self::Other,
+        let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
+        match ext {
+            "tex" | "ltx" | "TEX" | "LTX" => Self::Tex,
+            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "pdf" | "eps"
+            | "PNG" | "JPG" | "JPEG" | "GIF" | "SVG" | "WEBP" | "BMP" | "PDF" | "EPS" => Self::Image,
+            "bib" | "BIB" => Self::Bib,
+            "sty" | "cls" | "cfg" | "dtx" | "ins"
+            | "STY" | "CLS" | "CFG" | "DTX" | "INS" => Self::StyleOrConfig,
+            "csv" | "tsv" | "dat" | "json" | "txt" | "yaml" | "yml"
+            | "CSV" | "TSV" | "DAT" | "JSON" | "TXT" | "YAML" | "YML" => Self::Data,
+            _ => {
+                let lower = ext.to_ascii_lowercase();
+                match lower.as_str() {
+                    "tex" | "ltx" => Self::Tex,
+                    "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "pdf" | "eps" => Self::Image,
+                    "bib" => Self::Bib,
+                    "sty" | "cls" | "cfg" | "dtx" | "ins" => Self::StyleOrConfig,
+                    "csv" | "tsv" | "dat" | "json" | "txt" | "yaml" | "yml" => Self::Data,
+                    _ => Self::Other,
+                }
+            }
         }
+    }
+
+    /// Classifies a path based on a known directory flag and file extension, avoiding redundant filesystem calls.
+    pub fn from_path_with_is_dir(path: &Path, is_dir: bool) -> Self {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        Self::from_name_and_is_dir(name, is_dir)
+    }
+
+    /// Classifies a path based on filesystem metadata and file extension.
+    pub fn from_path(path: &Path) -> Self {
+        Self::from_path_with_is_dir(path, path.is_dir())
     }
 
     /// Returns an emoji icon representing the file type.
@@ -104,6 +141,8 @@ pub struct ProjectNode {
     pub relative_path: PathBuf,
     /// File or directory base name
     pub name: String,
+    /// Pre-lowercased base name for zero-allocation fast filter searching
+    pub name_lower: String,
     /// Categorized file type
     pub file_type: ProjectFileType,
     /// File size in bytes (0 for directories)
@@ -117,20 +156,38 @@ pub struct ProjectNode {
 }
 
 impl ProjectNode {
+    /// Fast zero-allocation match against an already-lowercased query string.
+    pub fn matches_filter_lower(&self, query_lower: &str) -> bool {
+        if query_lower.is_empty() {
+            return true;
+        }
+        self.name_lower.contains(query_lower)
+    }
+
+    /// Fast recursive match against an already-lowercased query string.
+    pub fn contains_match_lower(&self, query_lower: &str) -> bool {
+        if self.matches_filter_lower(query_lower) {
+            return true;
+        }
+        self.children.iter().any(|c| c.contains_match_lower(query_lower))
+    }
+
     /// Checks if this node matches the search filter (case-insensitive).
     pub fn matches_filter(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
         }
-        self.name.to_lowercase().contains(&query.to_lowercase())
+        let q_lower = query.to_lowercase();
+        self.matches_filter_lower(&q_lower)
     }
 
     /// Checks if this node or any of its recursive descendants matches the filter.
     pub fn contains_match(&self, query: &str) -> bool {
-        if self.matches_filter(query) {
+        if query.is_empty() {
             return true;
         }
-        self.children.iter().any(|c| c.contains_match(query))
+        let q_lower = query.to_lowercase();
+        self.contains_match_lower(&q_lower)
     }
 }
 
@@ -176,6 +233,17 @@ enum UiIntent {
     ImportInto(PathBuf),
     SetMaster(PathBuf),
     ClearMaster,
+    CollapseAll,
+    ExpandAll,
+}
+
+/// Reference to a visible node for virtualized row rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlatRow {
+    /// Indices path down the tree to locate the node (e.g. [0, 2, 1])
+    pub indices: Vec<usize>,
+    /// Indentation depth level
+    pub depth: usize,
 }
 
 /// Overleaf-style Working Directory and Project Files Manager.
@@ -208,6 +276,24 @@ pub struct ProjectManager {
     pub master_document: Option<PathBuf>,
     /// Temporary feedback notification
     pub status_message: Option<(String, Instant)>,
+    /// Cached metric totals (file count, directory count, total bytes) for O(1) status queries
+    pub cached_metrics: (usize, usize, u64),
+    /// Set of user-expanded folder paths preserved across refreshes
+    pub expanded_folders: HashSet<PathBuf>,
+    /// Flag indicating whether the next refresh is the initial workspace scan
+    pub is_initial_scan: bool,
+    /// Cached flattened visible rows for O(1) per-frame rendering
+    pub cached_visible_nodes: Vec<FlatRow>,
+    /// Last search query string used to build cached visible nodes
+    pub last_cached_query: String,
+    /// Dirty flag indicating cached visible rows must be recalculated
+    pub visible_nodes_dirty: bool,
+    /// Cached raw active file path to detect file switches
+    pub cached_active_raw: Option<PathBuf>,
+    /// Cached canonical active file path to eliminate per-frame canonicalize syscalls
+    pub cached_active_path: Option<PathBuf>,
+    /// Cached cleaned active path (stripped Windows \\?\ prefix)
+    pub cached_active_clean: Option<PathBuf>,
 }
 
 impl ProjectManager {
@@ -230,9 +316,19 @@ impl ProjectManager {
             delete_target: None,
             master_document: None,
             status_message: None,
+            cached_metrics: (0, 0, 0),
+            expanded_folders: HashSet::new(),
+            is_initial_scan: true,
+            cached_visible_nodes: Vec::new(),
+            last_cached_query: String::new(),
+            visible_nodes_dirty: true,
+            cached_active_raw: None,
+            cached_active_path: None,
+            cached_active_clean: None,
         };
         mgr.auto_detect_master_document();
         mgr.refresh();
+        mgr.rebuild_cached_visible_nodes();
         mgr
     }
 
@@ -243,13 +339,20 @@ impl ProjectManager {
                 return;
             }
         }
-        for candidate in &["main.tex", "document.tex", "thesis.tex", "paper.tex", "index.tex"] {
+        for candidate in &["main.tex"] {
             let p = self.root_dir.join(candidate);
             if p.is_file() {
-                if let Ok(content) = std::fs::read_to_string(&p) {
-                    if content.contains("\\documentclass") {
-                        self.master_document = Some(p);
-                        return;
+                // Read up to 8 KB only to avoid loading massive files into RAM during startup
+                if let Ok(file) = std::fs::File::open(&p) {
+                    use std::io::Read;
+                    let mut buffer = [0u8; 8192];
+                    let mut reader = std::io::BufReader::new(file);
+                    if let Ok(bytes_read) = reader.read(&mut buffer) {
+                        let prefix = String::from_utf8_lossy(&buffer[..bytes_read]);
+                        if prefix.contains("\\documentclass") {
+                            self.master_document = Some(p);
+                            return;
+                        }
                     }
                 }
             }
@@ -260,8 +363,11 @@ impl ProjectManager {
     pub fn set_root_dir(&mut self, new_root: PathBuf) {
         self.root_dir = new_root.clone();
         self.target_folder = new_root;
+        self.expanded_folders.clear();
+        self.is_initial_scan = true;
         self.auto_detect_master_document();
         self.refresh();
+        self.rebuild_cached_visible_nodes();
         self.set_status(format!("Working directory: {}", self.root_dir.display()));
     }
 
@@ -272,51 +378,137 @@ impl ProjectManager {
 
     /// Rescans the filesystem starting from `root_dir`.
     pub fn refresh(&mut self) {
-        self.root_nodes = Self::scan_dir(&self.root_dir, &self.root_dir);
+        let mut visited_ancestors = HashSet::new();
+        self.root_nodes = Self::scan_dir(
+            &self.root_dir,
+            &self.root_dir,
+            Path::new(""),
+            0,
+            &self.expanded_folders,
+            self.is_initial_scan,
+            &mut visited_ancestors,
+        );
+        if self.is_initial_scan {
+            Self::collect_expanded_paths(&self.root_nodes, &mut self.expanded_folders);
+        }
+        self.cached_metrics = Self::calculate_metrics(&self.root_nodes);
+        self.is_initial_scan = false;
+        self.rebuild_cached_visible_nodes();
     }
 
     /// Recursively scans a directory and builds the project tree.
-    fn scan_dir(dir: &Path, root: &Path) -> Vec<ProjectNode> {
+    fn scan_dir(
+        dir: &Path,
+        root: &Path,
+        rel_dir: &Path,
+        depth: usize,
+        expanded_folders: &HashSet<PathBuf>,
+        is_initial_scan: bool,
+        visited_ancestors: &mut HashSet<PathBuf>,
+    ) -> Vec<ProjectNode> {
         let mut nodes = Vec::new();
+        if depth > MAX_SCAN_DEPTH {
+            return nodes;
+        }
+
+        // Symlink cycle detection: ensure we do not enter an ancestor directory
+        let canonical_dir = std::fs::canonicalize(dir).ok();
+        if let Some(ref c) = canonical_dir {
+            if !visited_ancestors.insert(c.clone()) {
+                // Cycle detected in directory tree; stop recursion
+                return nodes;
+            }
+        }
+
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
-            Err(_) => return nodes,
+            Err(_) => {
+                if let Some(ref c) = canonical_dir {
+                    visited_ancestors.remove(c);
+                }
+                return nodes;
+            }
         };
 
         for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
 
-            if Self::is_ignored(&name) {
+            if Self::is_ignored(&name_str) {
                 continue;
             }
 
-            let file_type = ProjectFileType::from_path(&path);
-            let metadata = entry.metadata().ok();
-            let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified = metadata.and_then(|m| m.modified().ok());
+            let path = dir.join(&*file_name);
+            let name = name_str.to_string();
 
-            let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            let file_type_res = entry.file_type();
+            let is_symlink = file_type_res.as_ref().map(|ft| ft.is_symlink()).unwrap_or(false);
+            let is_dir = if is_symlink {
+                path.is_dir()
+            } else {
+                file_type_res.as_ref().map(|ft| ft.is_dir()).unwrap_or_else(|_| path.is_dir())
+            };
+
+            let file_type = ProjectFileType::from_name_and_is_dir(&name, is_dir);
+
+            let size_bytes = if is_dir {
+                0
+            } else {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            };
+
+            let relative_path = if rel_dir.as_os_str().is_empty() {
+                PathBuf::from(&name)
+            } else {
+                rel_dir.join(&name)
+            };
+
+            let name_lower = name.to_lowercase();
 
             let children = if file_type == ProjectFileType::Directory {
-                Self::scan_dir(&path, root)
+                Self::scan_dir(
+                    &path,
+                    root,
+                    &relative_path,
+                    depth + 1,
+                    expanded_folders,
+                    is_initial_scan,
+                    visited_ancestors,
+                )
             } else {
                 Vec::new()
+            };
+
+            let is_expanded = if file_type == ProjectFileType::Directory {
+                if is_initial_scan {
+                    // Expand top-level directory items by default for quick access
+                    depth == 0
+                } else {
+                    expanded_folders.contains(&path)
+                }
+            } else {
+                false
             };
 
             nodes.push(ProjectNode {
                 path,
                 relative_path,
                 name,
+                name_lower,
                 file_type,
                 size_bytes,
-                modified,
+                modified: None,
                 children,
-                is_expanded: true,
+                is_expanded,
             });
         }
 
-        // Sort: directories first (alphabetically), then files (alphabetically)
+        // Cycle protection cleanup
+        if let Some(ref c) = canonical_dir {
+            visited_ancestors.remove(c);
+        }
+
+        // Fast zero-allocation sort: directories first (alphabetically), then files (alphabetically)
         nodes.sort_by(|a, b| {
             match (
                 a.file_type == ProjectFileType::Directory,
@@ -324,9 +516,19 @@ impl ProjectManager {
             ) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                _ => a.name_lower.cmp(&b.name_lower),
             }
         });
+
+        // In initial scan, if there are many folders (> 25) or items (> 50), keep top-level folders collapsed
+        // to preserve performance on large directories.
+        if is_initial_scan && depth == 0 && (nodes.iter().filter(|n| n.file_type == ProjectFileType::Directory).count() > 25 || nodes.len() > 50) {
+            for node in &mut nodes {
+                if node.file_type == ProjectFileType::Directory {
+                    node.is_expanded = false;
+                }
+            }
+        }
 
         nodes
     }
@@ -355,34 +557,154 @@ impl ProjectManager {
         )
     }
 
-    /// Creates a new subfolder inside `target_folder`.
-    pub fn create_folder(&mut self, folder_name: &str) -> Result<PathBuf, String> {
-        let trimmed = folder_name.trim();
+    /// Validates a single file or directory name against path traversal, forbidden characters,
+    /// and Windows reserved device names.
+    ///
+    /// # Arguments
+    /// * `name` - The base name of the file or folder to validate (must not be a path with separators).
+    ///
+    /// # Returns
+    /// * `Ok(())` if the name is secure and valid.
+    /// * `Err(String)` describing the validation or security violation.
+    ///
+    /// # Security & Validation Checks
+    /// - Rejects empty strings or whitespace-only names
+    /// - Rejects directory navigation tokens (`.` and `..`)
+    /// - Rejects path separators (`/`, `\`) and null bytes (`\0`)
+    /// - Rejects prohibited filesystem characters (`<`, `>`, `:`, `"`, `|`, `?`, `*`)
+    /// - Rejects DOS/Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`)
+    pub fn validate_entry_name(name: &str) -> Result<(), String> {
+        let trimmed = name.trim();
         if trimmed.is_empty() {
-            return Err("Folder name cannot be empty".to_string());
+            return Err("Name cannot be empty".to_string());
         }
+        if trimmed == "." || trimmed == ".." {
+            return Err("Invalid name: cannot be '.' or '..'".to_string());
+        }
+        if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains('\0') {
+            return Err("Name cannot contain path separators ('/', '\\') or null bytes".to_string());
+        }
+        // Disallow dangerous Windows/POSIX filesystem characters (<, >, :, ", |, ?, *)
+        if trimmed.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+            return Err("Name contains prohibited characters (<, >, :, \", |, ?, *)".to_string());
+        }
+        // Disallow Windows reserved device names (e.g. CON, PRN, AUX, NUL, COM1..9, LPT1..9)
+        let stem = Path::new(trimmed)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(trimmed);
+        let upper = stem.to_ascii_uppercase();
+        let reserved = [
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
+        if reserved.contains(&upper.as_str()) {
+            return Err(format!("'{trimmed}' is a reserved system device name"));
+        }
+        Ok(())
+    }
+
+    /// Validates that `candidate` resides strictly inside `self.root_dir`.
+    ///
+    /// Resolves canonical paths to prevent symlink traversal and relative path escaping.
+    ///
+    /// # Arguments
+    /// * `candidate` - The filesystem path to verify.
+    /// * `allow_root` - If `false`, operations targeting the project root itself are rejected.
+    ///
+    /// # Returns
+    /// * `Ok(PathBuf)` containing the canonicalized path within the root.
+    /// * `Err(String)` if canonicalization fails or the path escapes the project root.
+    ///
+    /// # Security
+    /// Guarantees that no caller can create, read, modify, or delete files outside of the
+    /// active project directory boundary.
+    pub fn ensure_within_root(&self, candidate: &Path, allow_root: bool) -> Result<PathBuf, String> {
+        let canonical_root = std::fs::canonicalize(&self.root_dir)
+            .map_err(|e| format!("Cannot resolve project root directory: {e}"))?;
+
+        let canonical_candidate = if candidate.exists() {
+            std::fs::canonicalize(candidate)
+                .map_err(|e| format!("Cannot resolve path {}: {e}", candidate.display()))?
+        } else {
+            let parent = candidate
+                .parent()
+                .ok_or_else(|| "Target path has no parent directory".to_string())?;
+            let canonical_parent = std::fs::canonicalize(parent)
+                .map_err(|e| format!("Cannot resolve parent directory {}: {e}", parent.display()))?;
+            let file_name = candidate
+                .file_name()
+                .ok_or_else(|| "Target path has no file name".to_string())?;
+            canonical_parent.join(file_name)
+        };
+
+        if !canonical_candidate.starts_with(&canonical_root) {
+            return Err(format!(
+                "Security violation: path '{}' escapes project root",
+                candidate.display()
+            ));
+        }
+
+        if !allow_root && canonical_candidate == canonical_root {
+            return Err("Security violation: operation not permitted on project root directory".to_string());
+        }
+
+        Ok(canonical_candidate)
+    }
+
+    /// Creates a new subfolder inside `target_folder`.
+    ///
+    /// Validates the folder name and ensures the destination remains strictly within
+    /// the project root directory.
+    ///
+    /// # Arguments
+    /// * `folder_name` - Base name of the folder to create.
+    ///
+    /// # Errors
+    /// Returns `Err` if the name is invalid, escapes the project root, or already exists.
+    pub fn create_folder(&mut self, folder_name: &str) -> Result<PathBuf, String> {
+        Self::validate_entry_name(folder_name)?;
+        let trimmed = folder_name.trim();
+
+        let _ = self.ensure_within_root(&self.target_folder, true)?;
         let folder_path = self.target_folder.join(trimmed);
+        let _ = self.ensure_within_root(&folder_path, true)?;
         if folder_path.exists() {
             return Err("A file or folder with that name already exists".to_string());
         }
         std::fs::create_dir_all(&folder_path).map_err(|e| e.to_string())?;
+        self.expanded_folders.insert(self.target_folder.clone());
+        self.expanded_folders.insert(folder_path.clone());
         self.refresh();
         self.set_status(format!("Created folder: {}", trimmed));
         Ok(folder_path)
     }
 
-    /// Creates a new file inside `target_folder`, populated with a starter template.
+    /// Creates a new file inside `target_folder`, populated with an appropriate starter template.
+    ///
+    /// Validates the file name and ensures the destination remains strictly within
+    /// the project root directory.
+    ///
+    /// # Arguments
+    /// * `file_name` - Base name of the file to create (e.g. `document.tex`, `references.bib`).
+    ///
+    /// # Errors
+    /// Returns `Err` if the name is invalid, escapes the project root, or already exists.
     pub fn create_file(&mut self, file_name: &str) -> Result<PathBuf, String> {
+        Self::validate_entry_name(file_name)?;
         let trimmed = file_name.trim();
-        if trimmed.is_empty() {
-            return Err("File name cannot be empty".to_string());
-        }
+
+        let _ = self.ensure_within_root(&self.target_folder, true)?;
         let file_path = self.target_folder.join(trimmed);
+        let _ = self.ensure_within_root(&file_path, true)?;
         if file_path.exists() {
             return Err("A file with that name already exists".to_string());
         }
 
-        let is_root = self.target_folder == self.root_dir;
+        let canonical_root = std::fs::canonicalize(&self.root_dir).unwrap_or_else(|_| self.root_dir.clone());
+        let is_root = self.target_folder == self.root_dir
+            || std::fs::canonicalize(&self.target_folder).map(|p| p == canonical_root).unwrap_or(false);
         let content = if trimmed.ends_with(".tex") || trimmed.ends_with(".ltx") {
             if is_root {
                 Self::root_tex_template(trimmed)
@@ -396,13 +718,17 @@ impl ProjectManager {
         };
 
         std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
+        self.expanded_folders.insert(self.target_folder.clone());
         self.refresh();
         self.set_status(format!("Created file: {}", trimmed));
         Ok(file_path)
     }
 
-    /// Prompts a file dialog to import one or more files into `target_folder`.
+    /// Prompts a native file dialog to import one or more files into `target_folder`.
+    ///
+    /// Validates destination paths and file names to prevent directory escape during import.
     pub fn import_files_dialog(&mut self) -> Result<usize, String> {
+        let _ = self.ensure_within_root(&self.target_folder, true)?;
         let files = rfd::FileDialog::new()
             .set_directory(&self.target_folder)
             .pick_files();
@@ -415,7 +741,14 @@ impl ProjectManager {
         let mut count = 0;
         for src_path in &files {
             if let Some(file_name) = src_path.file_name() {
+                let name_str = file_name.to_string_lossy();
+                if Self::validate_entry_name(&name_str).is_err() {
+                    continue;
+                }
                 let dest_path = self.target_folder.join(file_name);
+                if self.ensure_within_root(&dest_path, true).is_err() {
+                    continue;
+                }
                 if let Err(e) = std::fs::copy(src_path, &dest_path) {
                     return Err(format!("Failed to copy {}: {e}", src_path.display()));
                 }
@@ -430,7 +763,17 @@ impl ProjectManager {
     }
 
     /// Deletes a file or directory from disk.
+    ///
+    /// Validates that `path` is strictly contained within `self.root_dir` and forbids
+    /// deleting the project root directory itself.
+    ///
+    /// # Arguments
+    /// * `path` - The path to the file or directory to delete.
+    ///
+    /// # Errors
+    /// Returns `Err` if `path` does not exist, resolves outside `self.root_dir`, or is `self.root_dir`.
     pub fn delete_item(&mut self, path: &Path) -> Result<(), String> {
+        let _ = self.ensure_within_root(path, false)?;
         if path.is_dir() {
             std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
         } else {
@@ -443,13 +786,26 @@ impl ProjectManager {
     }
 
     /// Renames a file or directory on disk.
+    ///
+    /// Validates the new name and ensures neither the source nor the destination escapes
+    /// the project root directory.
+    ///
+    /// # Arguments
+    /// * `old_path` - The current path of the file or directory.
+    /// * `new_name` - The new base name for the item.
+    ///
+    /// # Errors
+    /// Returns `Err` if `new_name` contains path traversal tokens or invalid characters,
+    /// if `old_path` is outside the root directory or is the root directory itself, or if
+    /// the destination already exists.
     pub fn rename_item(&mut self, old_path: &Path, new_name: &str) -> Result<PathBuf, String> {
+        Self::validate_entry_name(new_name)?;
         let trimmed = new_name.trim();
-        if trimmed.is_empty() {
-            return Err("Name cannot be empty".to_string());
-        }
+
+        let _ = self.ensure_within_root(old_path, false)?;
         let parent = old_path.parent().unwrap_or(&self.root_dir);
         let new_path = parent.join(trimmed);
+        let _ = self.ensure_within_root(&new_path, false)?;
         if new_path.exists() {
             return Err("Destination name already exists".to_string());
         }
@@ -496,12 +852,13 @@ impl ProjectManager {
         }
     }
 
-    /// Calculates total count of files, directories, and total byte size.
+    /// Returns cached total count of files, directories, and total byte size in O(1) time.
     pub fn metrics(&self) -> (usize, usize, u64) {
-        Self::calculate_metrics(&self.root_nodes)
+        self.cached_metrics
     }
 
-    fn calculate_metrics(nodes: &[ProjectNode]) -> (usize, usize, u64) {
+    /// Calculates total count of files, directories, and total byte size from a node list.
+    pub fn calculate_metrics(nodes: &[ProjectNode]) -> (usize, usize, u64) {
         let mut files = 0;
         let mut dirs = 0;
         let mut bytes = 0;
@@ -519,6 +876,75 @@ impl ProjectManager {
         }
         (files, dirs, bytes)
     }
+
+    /// Collapses all directory nodes in the project tree.
+    pub fn collapse_all(&mut self) {
+        self.expanded_folders.clear();
+        Self::set_all_expanded(&mut self.root_nodes, false);
+        self.visible_nodes_dirty = true;
+        self.rebuild_cached_visible_nodes();
+    }
+
+    /// Expands all directory nodes in the project tree.
+    pub fn expand_all(&mut self) {
+        Self::set_all_expanded(&mut self.root_nodes, true);
+        Self::collect_expanded_paths(&self.root_nodes, &mut self.expanded_folders);
+        self.visible_nodes_dirty = true;
+        self.rebuild_cached_visible_nodes();
+    }
+
+    /// Sets expansion state of all nodes recursively.
+    pub fn set_all_expanded(nodes: &mut [ProjectNode], expanded: bool) {
+        for node in nodes {
+            if node.file_type == ProjectFileType::Directory {
+                node.is_expanded = expanded;
+                Self::set_all_expanded(&mut node.children, expanded);
+            }
+        }
+    }
+
+    /// Collects paths of currently expanded directory nodes.
+    pub fn collect_expanded_paths(nodes: &[ProjectNode], set: &mut HashSet<PathBuf>) {
+        for node in nodes {
+            if node.file_type == ProjectFileType::Directory {
+                if node.is_expanded {
+                    set.insert(node.path.clone());
+                }
+                Self::collect_expanded_paths(&node.children, set);
+            }
+        }
+    }
+
+    /// Sets the expansion state of a specific folder and updates expanded_folders.
+    pub fn set_folder_expanded(&mut self, target_path: &Path, expanded: bool) -> bool {
+        if expanded {
+            self.expanded_folders.insert(target_path.to_path_buf());
+        } else {
+            self.expanded_folders.remove(target_path);
+        }
+        let res = Self::set_expanded_in_nodes(&mut self.root_nodes, target_path, expanded);
+        self.visible_nodes_dirty = true;
+        self.rebuild_cached_visible_nodes();
+        res
+    }
+
+    /// Sets the expansion state of a specific directory matching `target_path`.
+    pub fn set_expanded_in_nodes(nodes: &mut [ProjectNode], target_path: &Path, expanded: bool) -> bool {
+        for node in nodes {
+            if node.path == target_path {
+                node.is_expanded = expanded;
+                return true;
+            }
+            if !node.children.is_empty() {
+                if Self::set_expanded_in_nodes(&mut node.children, target_path, expanded) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+
 
     /// Formats a byte count into a readable string (e.g. `24.5 KB`, `1.2 MB`).
     pub fn format_bytes(bytes: u64) -> String {
@@ -705,6 +1131,22 @@ Write your section content here.
                 let _ = self.import_files_dialog();
             }
 
+            // Quick Collapse / Expand All
+            if ui
+                .small_button("⊟")
+                .on_hover_text("Collapse all folders")
+                .clicked()
+            {
+                intents.push(UiIntent::CollapseAll);
+            }
+            if ui
+                .small_button("⊞")
+                .on_hover_text("Expand all folders")
+                .clicked()
+            {
+                intents.push(UiIntent::ExpandAll);
+            }
+
             // Search Filter
             ui.add_space(8.0);
             ui.add(
@@ -820,13 +1262,32 @@ Write your section content here.
         ui.separator();
 
         // 4. File Tree View
-        let query = self.search_query.clone();
-        ScrollArea::vertical()
-            .id_salt("project_tree_scroll")
-            .auto_shrink([false, false])
-            .max_height(if is_modal { 340.0 } else { 420.0 })
-            .show(ui, |ui| {
-                if self.root_nodes.is_empty() {
+        let query_trimmed = self.search_query.trim();
+        if self.visible_nodes_dirty || query_trimmed != self.last_cached_query {
+            self.rebuild_cached_visible_nodes();
+        }
+
+        // Cache active canonical path to eliminate per-frame filesystem canonicalize syscalls
+        if self.cached_active_raw.as_deref() != active_file {
+            self.cached_active_raw = active_file.map(|p| p.to_path_buf());
+            self.cached_active_path = active_file.and_then(|p| std::fs::canonicalize(p).ok());
+            self.cached_active_clean = self.cached_active_path.as_ref().map(|p| dunce_clean_path(p));
+        }
+        let active_clean = self.cached_active_clean.as_deref();
+        let active_canonical = self.cached_active_path.as_deref();
+
+        let scroll_id = if is_modal {
+            "project_tree_scroll_modal"
+        } else {
+            "project_tree_scroll_sidebar"
+        };
+
+        if self.root_nodes.is_empty() {
+            ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .auto_shrink([false, false])
+                .max_height(if is_modal { 340.0 } else { 420.0 })
+                .show(ui, |ui| {
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| {
                         ui.colored_label(
@@ -837,22 +1298,75 @@ Write your section content here.
                             let _ = self.create_file("main.tex");
                         }
                     });
-                } else {
-                    for node in &self.root_nodes {
-                        Self::render_node(ui, node, 0, &query, active_file, self.master_document.as_deref(), &mut intents);
+                });
+        } else if self.cached_visible_nodes.is_empty() {
+            ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .auto_shrink([false, false])
+                .max_height(if is_modal { 340.0 } else { 420.0 })
+                .show(ui, |ui| {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        ui.colored_label(
+                            Color32::from_gray(140),
+                            format!("No files matching \"{}\"", self.search_query),
+                        );
+                    });
+                });
+        } else {
+            let total_rows = self.cached_visible_nodes.len();
+            ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .auto_shrink([false, false])
+                .max_height(if is_modal { 340.0 } else { 420.0 })
+                .show_rows(ui, ROW_HEIGHT, total_rows, |ui, row_range| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for idx in row_range {
+                        if let Some(row) = self.cached_visible_nodes.get(idx) {
+                            if let Some(node) = self.get_node(&row.indices) {
+                                Self::render_node_row(
+                                    ui,
+                                    node,
+                                    row.depth,
+                                    active_file,
+                                    active_clean,
+                                    active_canonical,
+                                    self.master_document.as_deref(),
+                                    &mut intents,
+                                );
+                            }
+                        }
                     }
-                }
-            });
+                });
+        }
 
         // Apply collected UI intents after tree traversal
         for intent in intents {
             match intent {
                 UiIntent::ToggleExpand(path) => {
-                    Self::toggle_expand_in_nodes(&mut self.root_nodes, &path);
+                    if Self::toggle_expand_in_nodes(&mut self.root_nodes, &path) {
+                        if self.expanded_folders.contains(&path) {
+                            self.expanded_folders.remove(&path);
+                        } else {
+                            self.expanded_folders.insert(path);
+                        }
+                    }
+                    self.visible_nodes_dirty = true;
+                    self.rebuild_cached_visible_nodes();
+                }
+                UiIntent::CollapseAll => {
+                    self.collapse_all();
+                }
+                UiIntent::ExpandAll => {
+                    self.expand_all();
                 }
                 UiIntent::SetTargetFolder(path) => {
+                    self.expanded_folders.insert(path.clone());
+                    let _ = Self::set_expanded_in_nodes(&mut self.root_nodes, &path, true);
                     self.target_folder = path;
                     self.new_file_open = true;
+                    self.visible_nodes_dirty = true;
+                    self.rebuild_cached_visible_nodes();
                 }
                 UiIntent::OpenTex(path) => {
                     project_action = ProjectAction::OpenTexFile(path);
@@ -879,7 +1393,11 @@ Write your section content here.
                     self.delete_target = Some(path);
                 }
                 UiIntent::ImportInto(path) => {
+                    self.expanded_folders.insert(path.clone());
+                    let _ = Self::set_expanded_in_nodes(&mut self.root_nodes, &path, true);
                     self.target_folder = path;
+                    self.visible_nodes_dirty = true;
+                    self.rebuild_cached_visible_nodes();
                     let _ = self.import_files_dialog();
                 }
                 UiIntent::SetMaster(path) => {
@@ -925,21 +1443,131 @@ Write your section content here.
         project_action
     }
 
-    /// Renders a single node (and its recursive children) in the tree.
-    fn render_node(
+    /// Rebuilds the cached list of visible rows for virtualized rendering.
+    pub fn rebuild_cached_visible_nodes(&mut self) {
+        self.cached_visible_nodes.clear();
+        let query_lower = self.search_query.trim().to_lowercase();
+        let mut path = Vec::new();
+        Self::collect_flat_indices(
+            &self.root_nodes,
+            &mut path,
+            0,
+            &query_lower,
+            false,
+            &mut self.cached_visible_nodes,
+        );
+        self.last_cached_query = self.search_query.trim().to_string();
+        self.visible_nodes_dirty = false;
+    }
+
+    fn collect_flat_indices(
+        nodes: &[ProjectNode],
+        current_path: &mut Vec<usize>,
+        depth: usize,
+        query_lower: &str,
+        parent_matched: bool,
+        out: &mut Vec<FlatRow>,
+    ) {
+        for (idx, node) in nodes.iter().enumerate() {
+            current_path.push(idx);
+
+            if !query_lower.is_empty() {
+                let this_matches = parent_matched || node.matches_filter_lower(query_lower);
+                let subtree_matches = this_matches || node.contains_match_lower(query_lower);
+                if subtree_matches {
+                    out.push(FlatRow {
+                        indices: current_path.clone(),
+                        depth,
+                    });
+                    if node.file_type == ProjectFileType::Directory {
+                        Self::collect_flat_indices(
+                            &node.children,
+                            current_path,
+                            depth + 1,
+                            query_lower,
+                            this_matches,
+                            out,
+                        );
+                    }
+                }
+            } else {
+                out.push(FlatRow {
+                    indices: current_path.clone(),
+                    depth,
+                });
+                if node.file_type == ProjectFileType::Directory && node.is_expanded {
+                    Self::collect_flat_indices(
+                        &node.children,
+                        current_path,
+                        depth + 1,
+                        query_lower,
+                        false,
+                        out,
+                    );
+                }
+            }
+
+            current_path.pop();
+        }
+    }
+
+    /// Retrieves a reference to a node given its hierarchical tree indices.
+    pub fn get_node(&self, indices: &[usize]) -> Option<&ProjectNode> {
+        let mut curr_slice = self.root_nodes.as_slice();
+        let mut curr_node = None;
+        for &idx in indices {
+            curr_node = curr_slice.get(idx);
+            if let Some(node) = curr_node {
+                curr_slice = &node.children;
+            } else {
+                return None;
+            }
+        }
+        curr_node
+    }
+
+    /// Recursively flattens visible nodes in display order for virtualized row rendering.
+    pub fn flatten_visible_nodes<'a>(
+        nodes: &'a [ProjectNode],
+        depth: usize,
+        query_lower: &str,
+        parent_matched: bool,
+        out: &mut Vec<FlattenedNode<'a>>,
+    ) {
+        for node in nodes {
+            if !query_lower.is_empty() {
+                let this_matches = parent_matched || node.matches_filter_lower(query_lower);
+                let subtree_matches = this_matches || node.contains_match_lower(query_lower);
+                if !subtree_matches {
+                    continue;
+                }
+                out.push(FlattenedNode { node, depth });
+                if node.file_type == ProjectFileType::Directory {
+                    Self::flatten_visible_nodes(&node.children, depth + 1, query_lower, this_matches, out);
+                }
+            } else {
+                out.push(FlattenedNode { node, depth });
+                if node.file_type == ProjectFileType::Directory && node.is_expanded {
+                    Self::flatten_visible_nodes(&node.children, depth + 1, query_lower, false, out);
+                }
+            }
+        }
+    }
+
+    /// Renders a single row in the virtualized file tree.
+    fn render_node_row(
         ui: &mut egui::Ui,
         node: &ProjectNode,
         depth: usize,
-        query: &str,
         active_file: Option<&Path>,
+        active_clean: Option<&Path>,
+        active_canonical: Option<&Path>,
         master_file: Option<&Path>,
         intents: &mut Vec<UiIntent>,
     ) {
-        if !query.is_empty() && !node.contains_match(query) {
-            return;
-        }
-
         ui.horizontal(|ui| {
+            ui.set_min_height(ROW_HEIGHT);
+
             // Indentation
             ui.add_space(depth as f32 * 14.0);
 
@@ -991,9 +1619,10 @@ Write your section content here.
 
                 let is_active = active_file.map_or(false, |p| {
                     p == node.path
-                        || std::fs::canonicalize(p).ok().map_or(false, |cp| {
-                            Some(cp) == std::fs::canonicalize(&node.path).ok()
-                        })
+                        || p == node.relative_path
+                        || active_clean == Some(&node.path)
+                        || active_canonical == Some(&node.path)
+                        || active_clean == Some(&node.relative_path)
                 });
 
                 if is_active {
@@ -1010,11 +1639,6 @@ Write your section content here.
                     Color32::from_gray(110),
                     Self::format_bytes(node.size_bytes),
                 );
-
-                let forward_rel_path = node
-                    .relative_path
-                    .to_string_lossy()
-                    .replace('\\', "/");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("🗑").on_hover_text("Delete file").clicked() {
@@ -1033,7 +1657,7 @@ Write your section content here.
 
                     match node.file_type {
                         ProjectFileType::Tex => {
-                            let is_master = master_file.map_or(false, |m| m == node.path);
+                            let is_master = master_file.map_or(false, |m| m == node.path || m == node.relative_path);
                             if is_master {
                                 if ui
                                     .small_button(RichText::new("👑 Master").color(Color32::from_rgb(229, 192, 123)).strong())
@@ -1065,26 +1689,28 @@ Write your section content here.
                                 .on_hover_text("Insert \\input{...} into document")
                                 .clicked()
                             {
+                                let forward_rel = node.relative_path.to_string_lossy().replace('\\', "/");
                                 intents.push(UiIntent::InsertInput {
-                                    rel_path: forward_rel_path.clone(),
+                                    rel_path: forward_rel,
                                 });
                             }
                         }
                         ProjectFileType::Image => {
-                            let stem = node
-                                .path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
                             if ui
                                 .small_button("➕ Figure")
                                 .on_hover_text("Insert \\begin{figure}...\\includegraphics environment")
                                 .clicked()
                             {
+                                let forward_rel = node.relative_path.to_string_lossy().replace('\\', "/");
+                                let stem = node
+                                    .path
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string();
                                 intents.push(UiIntent::InsertFigure {
-                                    rel_path: forward_rel_path.clone(),
-                                    label: stem.clone(),
+                                    rel_path: forward_rel,
+                                    label: stem,
                                 });
                             }
                             if ui
@@ -1092,8 +1718,9 @@ Write your section content here.
                                 .on_hover_text("Copy \\includegraphics snippet to clipboard")
                                 .clicked()
                             {
+                                let forward_rel = node.relative_path.to_string_lossy().replace('\\', "/");
                                 let snippet = format!(
-                                    "\\includegraphics[width=0.8\\linewidth]{{{forward_rel_path}}}"
+                                    "\\includegraphics[width=0.8\\linewidth]{{{forward_rel}}}"
                                 );
                                 intents.push(UiIntent::CopyClipboard(snippet));
                             }
@@ -1104,7 +1731,8 @@ Write your section content here.
                                 .on_hover_text("Insert \\bibliography statement")
                                 .clicked()
                             {
-                                let bib_stem = forward_rel_path.trim_end_matches(".bib");
+                                let forward_rel = node.relative_path.to_string_lossy().replace('\\', "/");
+                                let bib_stem = forward_rel.trim_end_matches(".bib");
                                 intents.push(UiIntent::CopyClipboard(format!(
                                     "\\bibliography{{{bib_stem}}}"
                                 )));
@@ -1115,28 +1743,33 @@ Write your section content here.
                 });
             }
         });
-
-        // Recursively render expanded directory children
-        if node.file_type == ProjectFileType::Directory && node.is_expanded {
-            for child in &node.children {
-                Self::render_node(ui, child, depth + 1, query, active_file, master_file, intents);
-            }
-        }
     }
 
     /// Toggles the `is_expanded` state of a folder matching `target_path`.
-    fn toggle_expand_in_nodes(nodes: &mut [ProjectNode], target_path: &Path) {
+    fn toggle_expand_in_nodes(nodes: &mut [ProjectNode], target_path: &Path) -> bool {
         for node in nodes {
             if node.path == target_path {
                 node.is_expanded = !node.is_expanded;
-                return;
+                return true;
             }
             if !node.children.is_empty() {
-                Self::toggle_expand_in_nodes(&mut node.children, target_path);
+                if Self::toggle_expand_in_nodes(&mut node.children, target_path) {
+                    return true;
+                }
             }
         }
+        false
     }
 }
+
+/// Lightweight reference to a visible node for virtualized row rendering.
+pub struct FlattenedNode<'a> {
+    /// Reference to the project tree node
+    pub node: &'a ProjectNode,
+    /// Indentation depth level
+    pub depth: usize,
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1228,4 +1861,329 @@ mod tests {
         pm.delete_item(&renamed).unwrap();
         assert!(!renamed.exists());
     }
+
+    #[test]
+    fn test_validate_entry_name() {
+        assert!(ProjectManager::validate_entry_name("").is_err());
+        assert!(ProjectManager::validate_entry_name("   ").is_err());
+        assert!(ProjectManager::validate_entry_name(".").is_err());
+        assert!(ProjectManager::validate_entry_name("..").is_err());
+        assert!(ProjectManager::validate_entry_name("../evil.tex").is_err());
+        assert!(ProjectManager::validate_entry_name("sub/evil.tex").is_err());
+        assert!(ProjectManager::validate_entry_name("sub\\evil.tex").is_err());
+        assert!(ProjectManager::validate_entry_name("evil:stream").is_err());
+        assert!(ProjectManager::validate_entry_name("evil*name").is_err());
+        assert!(ProjectManager::validate_entry_name("evil?name").is_err());
+        assert!(ProjectManager::validate_entry_name("evil<name>").is_err());
+        assert!(ProjectManager::validate_entry_name("CON").is_err());
+        assert!(ProjectManager::validate_entry_name("con.txt").is_err());
+        assert!(ProjectManager::validate_entry_name("aux.tex").is_err());
+        assert!(ProjectManager::validate_entry_name("NUL").is_err());
+        assert!(ProjectManager::validate_entry_name("COM1.dat").is_err());
+
+        assert!(ProjectManager::validate_entry_name("document.tex").is_ok());
+        assert!(ProjectManager::validate_entry_name("my_folder").is_ok());
+        assert!(ProjectManager::validate_entry_name("figure-1.png").is_ok());
+        assert!(ProjectManager::validate_entry_name("references.bib").is_ok());
+    }
+
+    #[test]
+    fn test_path_traversal_prevention() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let mut pm = ProjectManager::new(Some(root.clone()));
+
+        // Create a valid file first
+        let valid_file = pm.create_file("valid.tex").unwrap();
+        assert!(valid_file.exists());
+
+        // Attempt traversal in create_file
+        assert!(pm.create_file("../outside.tex").is_err());
+        assert!(pm.create_file("subdir/outside.tex").is_err());
+
+        // Attempt traversal in create_folder
+        assert!(pm.create_folder("../outside_folder").is_err());
+        assert!(pm.create_folder("subdir/outside_folder").is_err());
+
+        // Attempt traversal in rename_item
+        assert!(pm.rename_item(&valid_file, "../escaped.tex").is_err());
+        assert!(pm.rename_item(&valid_file, "CON").is_err());
+
+        // Attempt deleting root itself
+        assert!(pm.delete_item(&root).is_err());
+
+        // Attempt deleting outside path
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("do_not_delete.txt");
+        std::fs::write(&outside_file, "keep me").unwrap();
+        assert!(pm.delete_item(&outside_file).is_err());
+        assert!(outside_file.exists(), "Outside file should not have been deleted!");
+    }
+
+    #[test]
+    fn test_large_directory_performance_and_scaling() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+
+        // Create 20 folders with 30 files each = 600 files total, deeply nested
+        for folder_idx in 0..20 {
+            let sub = root.join(format!("folder_{folder_idx:02}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            let nested = sub.join("nested_subfolder");
+            std::fs::create_dir_all(&nested).unwrap();
+
+            for file_idx in 0..15 {
+                let p1 = sub.join(format!("file_{folder_idx:02}_{file_idx:02}.tex"));
+                std::fs::write(&p1, "% sub file").unwrap();
+
+                let p2 = nested.join(format!("data_{folder_idx:02}_{file_idx:02}.csv"));
+                std::fs::write(&p2, "1,2,3").unwrap();
+            }
+        }
+
+        // Add 50 root-level files
+        for i in 0..50 {
+            std::fs::write(root.join(format!("root_{i}.tex")), "\\section{test}").unwrap();
+        }
+
+        let start = std::time::Instant::now();
+        let mut pm = ProjectManager::new(Some(root.clone()));
+        let scan_duration = start.elapsed();
+        // Initial scan of 650 files and 40 directories must complete well under 1 second
+        assert!(scan_duration.as_millis() < 1000, "Scan took too long: {:?}", scan_duration);
+
+        let (files, dirs, _) = pm.metrics();
+        assert_eq!(files, 650);
+        assert_eq!(dirs, 40);
+
+        // Test collapse_all and expand_all
+        pm.collapse_all();
+        let mut flat_collapsed = Vec::new();
+        ProjectManager::flatten_visible_nodes(&pm.root_nodes, 0, "", false, &mut flat_collapsed);
+        // When collapsed, only root-level items (20 folders + 50 files = 70 items) should be visible!
+        assert_eq!(flat_collapsed.len(), 70);
+
+        pm.expand_all();
+        let mut flat_expanded = Vec::new();
+        ProjectManager::flatten_visible_nodes(&pm.root_nodes, 0, "", false, &mut flat_expanded);
+        // When expanded, all 650 files + 40 directories = 690 items are visible
+        assert_eq!(flat_expanded.len(), 690);
+
+        // Test search filter on large tree: filter for a specific file
+        let mut flat_search = Vec::new();
+        ProjectManager::flatten_visible_nodes(&pm.root_nodes, 0, "file_00_01", false, &mut flat_search);
+        assert_eq!(flat_search.len(), 2); // folder_00 and file_00_01.tex
+
+        // Test search filter for non-existent file
+        let mut flat_empty = Vec::new();
+        ProjectManager::flatten_visible_nodes(&pm.root_nodes, 0, "non_existent_xyz", false, &mut flat_empty);
+        assert_eq!(flat_empty.len(), 0);
+    }
+
+    #[test]
+    fn test_expansion_state_preservation_on_refresh() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let mut pm = ProjectManager::new(Some(root.clone()));
+
+        let folder_a = pm.create_folder("folder_a").unwrap();
+        let folder_b = pm.create_folder("folder_b").unwrap();
+        pm.refresh();
+
+        // Initially folders are expanded
+        pm.set_folder_expanded(&folder_a, false);
+        pm.set_folder_expanded(&folder_b, true);
+        assert!(!pm.root_nodes.iter().find(|n| n.path == folder_a).unwrap().is_expanded);
+        assert!(pm.root_nodes.iter().find(|n| n.path == folder_b).unwrap().is_expanded);
+
+        // Trigger refresh (e.g. after adding another file)
+        pm.target_folder = root.clone();
+        let _ = pm.create_file("document.tex").unwrap();
+
+        // Verify folder_a remained collapsed and folder_b remained expanded!
+        assert!(!pm.root_nodes.iter().find(|n| n.path == folder_a).unwrap().is_expanded);
+        assert!(pm.root_nodes.iter().find(|n| n.path == folder_b).unwrap().is_expanded);
+    }
+
+    #[test]
+    fn test_fast_filter_methods() {
+        let node = ProjectNode {
+            path: PathBuf::from("test.tex"),
+            relative_path: PathBuf::from("test.tex"),
+            name: "MySpecialDocument.tex".to_string(),
+            name_lower: "myspecialdocument.tex".to_string(),
+            file_type: ProjectFileType::Tex,
+            size_bytes: 100,
+            modified: None,
+            children: Vec::new(),
+            is_expanded: false,
+        };
+
+        assert!(node.matches_filter_lower("special"));
+        assert!(node.matches_filter_lower("myspecialdocument"));
+        assert!(!node.matches_filter_lower("unknown"));
+        assert!(node.matches_filter("SPECIAL"));
+        assert!(node.contains_match("DOCUMENT"));
+    }
+
+    #[test]
+    fn test_virtualized_cached_visible_rows_and_node_lookup() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let mut pm = ProjectManager::new(Some(root.clone()));
+
+        let folder = pm.create_folder("sections").unwrap();
+        pm.target_folder = folder.clone();
+        let _intro = pm.create_file("intro.tex").unwrap();
+        let _methods = pm.create_file("methods.tex").unwrap();
+        pm.target_folder = root.clone();
+        let _main = pm.create_file("main.tex").unwrap();
+
+        // Cached visible rows should initially contain root items:
+        // sections/ (expanded by default in small project), intro.tex, methods.tex, and main.tex
+        assert_eq!(pm.cached_visible_nodes.len(), 4);
+
+        // Verify O(1) node lookup by tree indices
+        for row in &pm.cached_visible_nodes {
+            let node = pm.get_node(&row.indices);
+            assert!(node.is_some());
+        }
+
+        // Test collapsing sections folder
+        pm.set_folder_expanded(&folder, false);
+        // When collapsed, only sections/ and main.tex should be visible (2 items)
+        assert_eq!(pm.cached_visible_nodes.len(), 2);
+
+        // Re-expand
+        pm.set_folder_expanded(&folder, true);
+        assert_eq!(pm.cached_visible_nodes.len(), 4);
+
+        // Test search query caching
+        pm.search_query = "methods".to_string();
+        pm.rebuild_cached_visible_nodes();
+        // sections/ (ancestor) and methods.tex should match (2 items)
+        assert_eq!(pm.cached_visible_nodes.len(), 2);
+        let matching_names: Vec<String> = pm
+            .cached_visible_nodes
+            .iter()
+            .map(|r| pm.get_node(&r.indices).unwrap().name.clone())
+            .collect();
+        assert_eq!(matching_names, vec!["sections", "methods.tex"]);
+    }
+
+    #[test]
+    fn test_active_file_caching_avoids_canonicalize() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let mut pm = ProjectManager::new(Some(root.clone()));
+        let file = pm.create_file("document.tex").unwrap();
+
+        assert!(pm.cached_active_raw.is_none());
+        assert!(pm.cached_active_path.is_none());
+
+        // Simulate active file detection
+        let active = Some(file.as_path());
+        if pm.cached_active_raw.as_deref() != active {
+            pm.cached_active_raw = active.map(|p| p.to_path_buf());
+            pm.cached_active_path = active.and_then(|p| std::fs::canonicalize(p).ok());
+            pm.cached_active_clean = pm.cached_active_path.as_ref().map(|p| dunce_clean_path(p));
+        }
+
+        assert_eq!(pm.cached_active_raw.as_deref(), active);
+        assert!(pm.cached_active_path.is_some());
+        assert!(pm.cached_active_clean.is_some());
+
+        // Subsequent check with the same active file must not trigger re-canonicalization
+        let had_canonical = pm.cached_active_path.clone();
+        if pm.cached_active_raw.as_deref() != active {
+            panic!("Should not execute when active file is unchanged!");
+        }
+        assert_eq!(pm.cached_active_path, had_canonical);
+    }
+
+    #[test]
+    fn test_symlink_and_deep_recursion_safety() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+
+        // Create a chain of deeply nested directories
+        let mut current = root.clone();
+        for i in 0..35 {
+            current = current.join(format!("level_{i}"));
+        }
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("deep.tex"), "deep").unwrap();
+
+        let mut visited = HashSet::new();
+        let nodes = ProjectManager::scan_dir(
+            &root,
+            &root,
+            Path::new(""),
+            0,
+            &HashSet::new(),
+            false,
+            &mut visited,
+        );
+        // Recursion must terminate safely at MAX_SCAN_DEPTH without stack overflow
+        assert!(!nodes.is_empty());
+    }
+
+    #[test]
+    fn test_scaling_thousands_of_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+
+        // Create 50 folders with 40 files each = 2,000 files total!
+        for folder_idx in 0..50 {
+            let sub = root.join(format!("dir_{folder_idx:02}"));
+            std::fs::create_dir_all(&sub).unwrap();
+
+            for file_idx in 0..40 {
+                let file_path = sub.join(format!("item_{folder_idx:02}_{file_idx:02}.tex"));
+                std::fs::write(&file_path, "\\input{test}").unwrap();
+            }
+        }
+
+        let start = std::time::Instant::now();
+        let mut pm = ProjectManager::new(Some(root.clone()));
+        let scan_elapsed = start.elapsed();
+        // Scanning 2,000 files across 50 folders must finish well under 2 seconds even in debug mode
+        assert!(
+            scan_elapsed.as_millis() < 2000,
+            "Scanning 2000 files took too long: {:?}",
+            scan_elapsed
+        );
+
+        let (files, dirs, _) = pm.metrics();
+        assert_eq!(files, 2000);
+        assert_eq!(dirs, 50);
+
+        // Test collapse_all on 2,050 items
+        pm.collapse_all();
+        assert_eq!(pm.cached_visible_nodes.len(), 50);
+
+        // Test expand_all on 2,050 items
+        pm.expand_all();
+        assert_eq!(pm.cached_visible_nodes.len(), 2050);
+
+        // Test O(1) node lookup by tree indices
+        let lookup_start = std::time::Instant::now();
+        for idx in (0..2050).step_by(50) {
+            let row = &pm.cached_visible_nodes[idx];
+            let node = pm.get_node(&row.indices);
+            assert!(node.is_some());
+        }
+        let lookup_elapsed = lookup_start.elapsed();
+        assert!(lookup_elapsed.as_millis() < 5, "Node lookups took too long: {:?}", lookup_elapsed);
+
+        // Test search filter across 2,000 files
+        let search_start = std::time::Instant::now();
+        pm.search_query = "item_42_17".to_string();
+        pm.rebuild_cached_visible_nodes();
+        let search_elapsed = search_start.elapsed();
+        // Should find dir_42 and item_42_17.tex (2 items)
+        assert_eq!(pm.cached_visible_nodes.len(), 2);
+        assert!(search_elapsed.as_millis() < 50, "Search took too long: {:?}", search_elapsed);
+    }
 }
+
