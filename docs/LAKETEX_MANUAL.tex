@@ -18,7 +18,7 @@
 }
 
 \title{\textbf{Laketex: High-Performance Portable \LaTeX\ Viewer \& Editor}}
-\author{\textbf{Laketex Engineering Team} \\ Pure-Rust Systems \& Typesetting Group}
+\author{\textbf{Laketex Engineering Team} \\ Axel Greavette}
 \date{October 2026}
 
 \begin{document}
@@ -185,13 +185,14 @@ colors:
 
 Laketex automatically inspects preambles for declared packages (\texttt{\textbackslash usepackage\{...\}}). When standard CTAN packages are detected, they are provisioned seamlessly.
 
-\subsection{External Host Tool Dependencies}
+\subsection{External Host Tool Dependencies \& Conda Integration}
 Certain packages (such as \texttt{minted} for source code highlighting or \texttt{pythontex} for Python execution) depend on external system tools such as Python's \texttt{pygments} library (\texttt{pygmentize}).
 
-Laketex includes an automated, privacy-respecting dependency workflow:
+Laketex includes an automated, privacy-respecting dependency workflow with comprehensive Conda and virtual environment support:
 \begin{itemize}
-    \item \textbf{Prerequisite Probing}: Laketex checks whether Python and \texttt{pip} are available on your system \texttt{PATH}.
-    \item \textbf{Explicit User Consent}: Laketex will \textbf{never} execute package installations without your permission. A prompt modal appears asking if you wish to run \texttt{python -m pip install pygments}.
+    \item \textbf{Prerequisite Probing}: Laketex inspects system prerequisites, detecting standard Python, active Conda environments (\texttt{CONDA\_PREFIX}), virtual environments (\texttt{VIRTUAL\_ENV}), and registered Conda environments in \texttt{\~{}/.conda/environments.txt}. It fully supports Miniconda, Anaconda, Miniforge, and Mamba.
+    \item \textbf{Explicit User Consent}: Laketex will \textbf{never} execute package installations without your permission. A prompt modal appears asking for consent before invoking \texttt{pip} or \texttt{conda}.
+    \item \textbf{Conda \& Multi-Strategy Fallback}: If \texttt{pip} is restricted or unavailable in a Conda environment, Laketex falls back to \texttt{conda install -y -c conda-forge}.
     \item \textbf{Safe Fallback Draft Mode}: If you decline or do not have Python installed, Laketex automatically applies draft mode (\texttt{\textbackslash PassOptionsToPackage\{draft\}\{minted\}}), allowing your document to compile cleanly without crashing.
 \end{itemize}
 

@@ -325,11 +325,19 @@ impl CliArgs {
                 if py_env.python_available {
                     let ver = py_env.python_version.as_deref().unwrap_or("unknown");
                     let path = py_env.python_path.as_deref().unwrap_or("python");
-                    println!("  ✓ Python: {} ({})", ver, path);
+                    let conda_tag = if py_env.is_conda {
+                        let name = py_env.environment_name.as_deref().unwrap_or("env");
+                        format!(" [Conda: {name}]")
+                    } else {
+                        String::new()
+                    };
+                    println!("  ✓ Python: {} ({}){}", ver, path, conda_tag);
                     if py_env.pip_available {
                         println!("  ✓ pip: Available");
+                    } else if py_env.conda_cli_path.is_some() {
+                        println!("  ✓ conda: Available (conda-forge fallback ready)");
                     } else {
-                        println!("  ✗ pip: Missing");
+                        println!("  ✗ pip / conda: Missing");
                     }
                 } else {
                     println!("  ✗ Python: Not detected on system PATH");

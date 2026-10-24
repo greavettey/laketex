@@ -176,6 +176,8 @@ pub struct EditorPanel {
     pub target_scroll_line: Option<usize>,
     /// Pending character range to highlight / select
     pub target_selection: Option<(usize, usize)>,
+    /// Last known character range of the cursor/caret in the editor
+    pub last_cursor_range: Option<(usize, usize)>,
     /// Editor monospace font size in points
     pub font_size: f32,
     /// Find and replace panel state
@@ -187,6 +189,7 @@ impl Default for EditorPanel {
         Self {
             target_scroll_line: None,
             target_selection: None,
+            last_cursor_range: None,
             font_size: 13.5,
             find_replace: FindReplaceState::default(),
         }
@@ -202,6 +205,66 @@ impl EditorPanel {
     /// Requests that the editor smoothly scroll and place the caret at `line`.
     pub fn jump_to_line(&mut self, line: usize) {
         self.target_scroll_line = Some(line);
+    }
+
+    /// Inserts a snippet into content at the current caret or selection position,
+    /// or before `\end{document}` if no caret is recorded. Returns the new character index.
+    pub fn insert_snippet_at_caret(
+        &mut self,
+        ctx: &egui::Context,
+        content: &mut String,
+        snippet: &str,
+    ) -> usize {
+        let editor_id = egui::Id::new("latex_source_code_editor");
+        let active_char_range = self.last_cursor_range.or_else(|| {
+            egui::widgets::text_edit::TextEditState::load(ctx, editor_id)
+                .and_then(|state| state.cursor.char_range().map(|r| {
+                    (
+                        r.primary.index.min(r.secondary.index),
+                        r.primary.index.max(r.secondary.index),
+                    )
+                }))
+        });
+
+        let new_pos = if let Some((start_char, end_char)) = active_char_range {
+            let total_chars = content.chars().count();
+            let start = start_char.min(total_chars);
+            let end = end_char.min(total_chars);
+
+            let byte_start = content
+                .char_indices()
+                .nth(start)
+                .map(|(b, _)| b)
+                .unwrap_or(content.len());
+            let byte_end = content
+                .char_indices()
+                .nth(end)
+                .map(|(b, _)| b)
+                .unwrap_or(content.len());
+
+            content.replace_range(byte_start..byte_end, snippet);
+            start + snippet.chars().count()
+        } else if let Some(byte_pos) = content.rfind("\\end{document}") {
+            let char_pos = content[..byte_pos].chars().count();
+            content.insert_str(byte_pos, snippet);
+            char_pos + snippet.chars().count()
+        } else {
+            let char_pos = content.chars().count();
+            content.push_str(snippet);
+            char_pos + snippet.chars().count()
+        };
+
+        self.last_cursor_range = Some((new_pos, new_pos));
+        self.target_selection = Some((new_pos, new_pos));
+
+        let mut state = egui::widgets::text_edit::TextEditState::load(ctx, editor_id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(
+            egui::text::CCursor::new(new_pos),
+        )));
+        state.store(ctx, editor_id);
+        ctx.memory_mut(|mem| mem.request_focus(editor_id));
+
+        new_pos
     }
 
     /// Opens the Find bar and focuses the input query field
@@ -626,6 +689,19 @@ impl EditorPanel {
                     text_changed = true;
                 }
 
+                // Update last known cursor range from output or TextEditState
+                if let Some(r) = output.cursor_range {
+                    let s = r.primary.ccursor.index.min(r.secondary.ccursor.index);
+                    let e = r.primary.ccursor.index.max(r.secondary.ccursor.index);
+                    self.last_cursor_range = Some((s, e));
+                } else if let Some(state) = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id) {
+                    if let Some(r) = state.cursor.char_range() {
+                        let s = r.primary.index.min(r.secondary.index);
+                        let e = r.primary.index.max(r.secondary.index);
+                        self.last_cursor_range = Some((s, e));
+                    }
+                }
+
                 let clip_rect = ui.clip_rect();
 
                 // Accurately scroll to target words or lines using actual galley layout geometry
@@ -943,5 +1019,66 @@ mod tests {
         assert_eq!(compute_line(35), 2); // at second '\n'
         assert_eq!(compute_line(36), 3); // 't' in third
         assert_eq!(compute_line(47), 4); // after trailing '\n'
+    }
+
+    #[test]
+    fn test_insert_snippet_at_caret() {
+        let ctx = egui::Context::default();
+        let mut panel = EditorPanel::new();
+        let mut content = "Let $x = $ and finish.".to_string();
+
+        // Caret is right after "$x = " (char index 9)
+        panel.last_cursor_range = Some((9, 9));
+        let new_pos = panel.insert_snippet_at_caret(&ctx, &mut content, "\\alpha ");
+
+        assert_eq!(content, "Let $x = \\alpha $ and finish.");
+        assert_eq!(new_pos, 16);
+        assert_eq!(panel.last_cursor_range, Some((16, 16)));
+        assert_eq!(panel.target_selection, Some((16, 16)));
+    }
+
+    #[test]
+    fn test_insert_snippet_replaces_selection() {
+        let ctx = egui::Context::default();
+        let mut panel = EditorPanel::new();
+        let mut content = "Replace [SELECTED] text.".to_string();
+
+        // Selection covers "[SELECTED]" (chars 8 to 18)
+        panel.last_cursor_range = Some((8, 18));
+        let new_pos = panel.insert_snippet_at_caret(&ctx, &mut content, "\\beta");
+
+        assert_eq!(content, "Replace \\beta text.");
+        assert_eq!(new_pos, 13);
+        assert_eq!(panel.last_cursor_range, Some((13, 13)));
+    }
+
+    #[test]
+    fn test_insert_snippet_fallback_before_end_document() {
+        let ctx = egui::Context::default();
+        let mut panel = EditorPanel::new();
+        let mut content = "\\begin{document}\nHello\n\\end{document}\n".to_string();
+
+        // No caret recorded
+        panel.last_cursor_range = None;
+        let new_pos = panel.insert_snippet_at_caret(&ctx, &mut content, "\\begin{equation}\nx=1\n\\end{equation}\n");
+
+        assert!(content.contains("\\begin{equation}\nx=1\n\\end{equation}\n\\end{document}"));
+        assert!(content.ends_with("\\end{document}\n"));
+        assert_eq!(panel.last_cursor_range, Some((new_pos, new_pos)));
+    }
+
+    #[test]
+    fn test_insert_snippet_unicode_character_indices() {
+        let ctx = egui::Context::default();
+        let mut panel = EditorPanel::new();
+        // String contains multi-byte Unicode characters: θ (2 bytes), λ (2 bytes)
+        let mut content = "Angle θ and λ = .".to_string();
+
+        // Caret is at the '.' (char index 16)
+        let caret_char = content.chars().position(|c| c == '.').unwrap();
+        panel.last_cursor_range = Some((caret_char, caret_char));
+        panel.insert_snippet_at_caret(&ctx, &mut content, "\\gamma");
+
+        assert_eq!(content, "Angle θ and λ = \\gamma.");
     }
 }

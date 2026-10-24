@@ -11,6 +11,11 @@ use crate::compiler::engine::CompilerEngine;
 use crate::error::{LakeTexError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+static PROVISION_MUTEX: Mutex<()> = Mutex::new(());
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 static EMBEDDED_TECTONIC_GZ: &[u8] = include_bytes!("../../assets/tectonic.exe.gz");
@@ -72,11 +77,39 @@ impl Provisioner {
             ));
         }
 
+        // Fast path: if target_exe already exists with valid size, ensure permissions and return
+        if target_exe.is_file() {
+            if let Ok(meta) = target_exe.metadata() {
+                if meta.len() > 1_000_000 {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = meta.permissions();
+                        if perms.mode() & 0o111 == 0 {
+                            perms.set_mode(0o755);
+                            let _ = fs::set_permissions(target_exe, perms);
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         if let Some(parent) = target_exe.parent() {
             fs::create_dir_all(parent).map_err(LakeTexError::Io)?;
         }
 
-        let temp_exe = target_exe.with_extension("tmp");
+        // Unique temporary file avoids race conditions across parallel threads or test processes
+        let unique_id = format!(
+            "tmp.{}.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let temp_exe = target_exe.with_extension(unique_id);
         {
             let mut decoder = GzDecoder::new(EMBEDDED_TECTONIC_GZ);
             let out_file = fs::File::create(&temp_exe).map_err(LakeTexError::Io)?;
@@ -90,6 +123,9 @@ impl Provisioner {
                 writer.write_all(&buffer[..n]).map_err(LakeTexError::Io)?;
             }
             writer.flush().map_err(LakeTexError::Io)?;
+            if let Ok(file) = writer.into_inner() {
+                let _ = file.sync_all();
+            }
         }
 
         #[cfg(unix)]
@@ -100,20 +136,46 @@ impl Provisioner {
                 perms.set_mode(0o755);
                 let _ = fs::set_permissions(&temp_exe, perms);
             }
+            #[cfg(target_os = "macos")]
+            {
+                // Ensure ad-hoc code signature on Apple Silicon macOS
+                let _ = crate::create_hidden_command("codesign")
+                    .args(["--force", "--sign", "-", temp_exe.to_str().unwrap_or("")])
+                    .status();
+            }
         }
-
-        if target_exe.exists() {
-            let _ = fs::remove_file(target_exe);
-        }
-        fs::rename(&temp_exe, target_exe).map_err(LakeTexError::Io)?;
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = fs::metadata(target_exe) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o755);
-                let _ = fs::set_permissions(target_exe, perms);
+            // On Unix, rename is atomic and overwrites target_exe cleanly without deleting it first.
+            if let Err(e) = fs::rename(&temp_exe, target_exe) {
+                let _ = fs::remove_file(&temp_exe);
+                if target_exe.is_file() {
+                    if let Ok(meta) = target_exe.metadata() {
+                        if meta.len() > 1_000_000 {
+                            return Ok(());
+                        }
+                    }
+                }
+                return Err(LakeTexError::Io(e));
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if target_exe.exists() {
+                let _ = fs::remove_file(target_exe);
+            }
+            if let Err(e) = fs::rename(&temp_exe, target_exe) {
+                let _ = fs::remove_file(&temp_exe);
+                if target_exe.is_file() {
+                    if let Ok(meta) = target_exe.metadata() {
+                        if meta.len() > 1_000_000 {
+                            return Ok(());
+                        }
+                    }
+                }
+                return Err(LakeTexError::Io(e));
             }
         }
 
@@ -123,6 +185,8 @@ impl Provisioner {
     /// Automatically provisions Tectonic to the local application bin directory.
     /// Extracts directly from the embedded compressed binary payload if available (zero network download).
     pub fn provision_tectonic<F: Fn(f32, &str)>(progress_callback: F) -> Result<PathBuf> {
+        let _guard = PROVISION_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+
         let bin_dir = CompilerEngine::laketex_bin_dir().ok_or_else(|| {
             LakeTexError::Provisioning("Could not determine user cache directory".to_string())
         })?;
@@ -164,7 +228,12 @@ impl Provisioner {
         })?;
 
         progress_callback(0.1, "Connecting to GitHub Releases...");
-        let temp_archive = bin_dir.join("tectonic_download.tar.gz");
+        let unique_archive = format!(
+            "tectonic_download_{}_{}.tar.gz",
+            std::process::id(),
+            UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let temp_archive = bin_dir.join(unique_archive);
 
         progress_callback(0.3, "Downloading portable Tectonic engine...");
         let response = ureq::get(url)
@@ -188,6 +257,12 @@ impl Provisioner {
                 perms.set_mode(0o755);
                 let _ = fs::set_permissions(&target_exe, perms);
             }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = crate::create_hidden_command("codesign")
+                    .args(["--force", "--sign", "-", target_exe.to_str().unwrap_or("")])
+                    .status();
+            }
         }
 
         if target_exe.is_file() {
@@ -202,30 +277,45 @@ impl Provisioner {
     }
 
     fn extract_archive(archive: &Path, destination: &Path) -> Result<bool> {
+        let unique_dir = format!("extract_{}_{}", std::process::id(), UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let temp_extract_dir = destination.join(unique_dir);
+        let _ = fs::create_dir_all(&temp_extract_dir);
+
         #[cfg(windows)]
         {
-            // Windows 10/11 includes bsdtar natively which extracts both .zip and .tar.gz
             let status = crate::create_hidden_command("tar")
                 .arg("-xf")
                 .arg(archive)
                 .arg("-C")
-                .arg(destination)
+                .arg(&temp_extract_dir)
                 .status();
 
-            match status {
-                Ok(s) if s.success() => Ok(true),
+            let ok = match status {
+                Ok(s) if s.success() => true,
                 _ => {
-                    // Fallback to PowerShell Expand-Archive for zip archives
                     let ps_status = crate::create_hidden_command("powershell")
                         .args(["-NoProfile", "-Command", "Expand-Archive", "-Path"])
                         .arg(archive)
                         .arg("-DestinationPath")
-                        .arg(destination)
+                        .arg(&temp_extract_dir)
                         .arg("-Force")
                         .status();
-                    Ok(ps_status.map(|s| s.success()).unwrap_or(false))
+                    ps_status.map(|s| s.success()).unwrap_or(false)
+                }
+            };
+
+            if ok {
+                let extracted_bin = temp_extract_dir.join("tectonic.exe");
+                let target_bin = destination.join("tectonic.exe");
+                if extracted_bin.is_file() {
+                    if target_bin.exists() {
+                        let _ = fs::remove_file(&target_bin);
+                    }
+                    let _ = fs::rename(&extracted_bin, &target_bin);
                 }
             }
+            let _ = fs::remove_dir_all(&temp_extract_dir);
+            Ok(ok)
         }
 
         #[cfg(not(windows))]
@@ -234,13 +324,31 @@ impl Provisioner {
                 .arg("-xf")
                 .arg(archive)
                 .arg("-C")
-                .arg(destination)
+                .arg(&temp_extract_dir)
                 .status();
 
-            match status {
-                Ok(s) => Ok(s.success()),
-                Err(_) => Ok(false),
+            let ok = status.map(|s| s.success()).unwrap_or(false);
+            if ok {
+                let extracted_bin = temp_extract_dir.join("tectonic");
+                let target_bin = destination.join("tectonic");
+                if extracted_bin.is_file() {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = fs::metadata(&extracted_bin) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o755);
+                        let _ = fs::set_permissions(&extracted_bin, perms);
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = crate::create_hidden_command("codesign")
+                            .args(["--force", "--sign", "-", extracted_bin.to_str().unwrap_or("")])
+                            .status();
+                    }
+                    let _ = fs::rename(&extracted_bin, &target_bin);
+                }
             }
+            let _ = fs::remove_dir_all(&temp_extract_dir);
+            Ok(ok)
         }
     }
 }

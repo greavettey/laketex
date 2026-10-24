@@ -1,9 +1,20 @@
-//! # CTAN Package Detection & Auto-Import Management
+//! # CTAN Package Detection, Dependency Consent & Conda/Python Management
 //!
 //! Scans LaTeX preambles for declared packages (`\usepackage{...}`, `\RequirePackage{...}`),
 //! maps packages to friendly descriptions and categories, and provides auto-injection
-//! utilities for missing dependencies. Also manages external package tool dependencies
-//! (e.g., Pygments for the `minted` package) with explicit user consent workflows.
+//! utilities for missing dependencies.
+//!
+//! Also manages external host tool dependencies (e.g., Pygments for the `minted` package,
+//! PythonTeX, dot2tex) with explicit user consent workflows and deep environment discovery:
+//! - Auto-discovery of active Conda (`CONDA_PREFIX`), virtual environments (`VIRTUAL_ENV`),
+//!   and registered Conda environments in `~/.conda/environments.txt`.
+//! - Support for standard Python installations as well as Miniconda, Anaconda, Miniforge,
+//!   Mambaforge, and Micromamba across Windows, macOS, and Linux.
+//! - Multi-strategy package installation trying standard `pip`, user-level install (`--user`),
+//!   PEP 668 `--break-system-packages`, and falling back to `conda install -y -c conda-forge`
+//!   if `pip` is absent in a Conda environment.
+//! - Post-install binary verification to guarantee that required binaries are located on disk
+//!   and automatically synchronized into the compiler process's `PATH`.
 
 use crate::error::{LakeTexError, Result};
 use serde::{Deserialize, Serialize};
@@ -122,6 +133,18 @@ pub struct PythonEnvironment {
     /// Path to user-level Python Scripts directory (e.g. for `pip install --user`)
     #[serde(default)]
     pub user_scripts_dir: Option<String>,
+    /// Whether this environment is managed by Conda / Miniconda / Miniforge / Mamba
+    #[serde(default)]
+    pub is_conda: bool,
+    /// Conda prefix path if this is a Conda environment
+    #[serde(default)]
+    pub conda_prefix: Option<String>,
+    /// Path to conda CLI executable if available for fallback installation
+    #[serde(default)]
+    pub conda_cli_path: Option<String>,
+    /// Friendly environment name (e.g. "base", "ecor1041", or virtualenv name)
+    #[serde(default)]
+    pub environment_name: Option<String>,
 }
 
 /// Metadata regarding a declared or detected CTAN package.
@@ -291,26 +314,252 @@ impl PackageManager {
         probed
     }
 
-    fn probe_python_environment() -> PythonEnvironment {
-        let mut candidates: Vec<String> = if cfg!(windows) {
-            vec!["python".to_string(), "py".to_string(), "python3".to_string()]
+    /// Discovers all available Conda, Miniconda, Miniforge, and Mamba environments on the system.
+    pub fn discover_conda_environments() -> Vec<PathBuf> {
+        let mut envs: Vec<PathBuf> = Vec::new();
+
+        // 1. Check active CONDA_PREFIX
+        if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
+            let p = PathBuf::from(prefix);
+            if p.is_dir() && !envs.contains(&p) {
+                envs.push(p);
+            }
+        }
+
+        // 2. Check ~/.conda/environments.txt registry
+        let env_file = if cfg!(windows) {
+            std::env::var("USERPROFILE")
+                .ok()
+                .map(|up| PathBuf::from(up).join(".conda").join("environments.txt"))
         } else {
-            vec!["python3".to_string(), "python".to_string()]
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".conda").join("environments.txt"))
         };
 
-        if cfg!(windows) {
-            let mut known_windows_locations = Vec::new();
+        if let Some(file_path) = env_file {
+            if file_path.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let p = PathBuf::from(trimmed);
+                            if p.is_dir() && !envs.contains(&p) {
+                                envs.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
+        // 3. Known standard base directories for Conda, Miniconda, Miniforge, Mambaforge, Micromamba
+        let mut base_dirs: Vec<PathBuf> = Vec::new();
+        if cfg!(windows) {
             if let Ok(user_profile) = std::env::var("USERPROFILE") {
-                let up = PathBuf::from(&user_profile);
-                known_windows_locations.push(up.join("miniconda3").join("python.exe"));
-                known_windows_locations.push(up.join("anaconda3").join("python.exe"));
+                let up = PathBuf::from(user_profile);
+                for name in &[
+                    "miniconda3",
+                    "miniforge3",
+                    "anaconda3",
+                    "mambaforge",
+                    "micromamba",
+                ] {
+                    base_dirs.push(up.join(name));
+                }
             }
             if let Ok(program_data) = std::env::var("ProgramData") {
-                let pd = PathBuf::from(&program_data);
-                known_windows_locations.push(pd.join("miniconda3").join("python.exe"));
-                known_windows_locations.push(pd.join("anaconda3").join("python.exe"));
+                let pd = PathBuf::from(program_data);
+                for name in &["miniconda3", "miniforge3", "anaconda3", "mambaforge"] {
+                    base_dirs.push(pd.join(name));
+                }
             }
+            for drive_root in &[
+                "C:\\miniconda3",
+                "C:\\miniforge3",
+                "C:\\anaconda3",
+                "C:\\mambaforge",
+            ] {
+                base_dirs.push(PathBuf::from(drive_root));
+            }
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let lad = PathBuf::from(local_app_data);
+                for name in &["miniconda3", "miniforge3", "anaconda3"] {
+                    base_dirs.push(lad.join(name));
+                }
+            }
+        } else {
+            if let Ok(home) = std::env::var("HOME") {
+                let h = PathBuf::from(home);
+                for name in &[
+                    "miniconda3",
+                    "miniforge3",
+                    "anaconda3",
+                    "mambaforge",
+                    ".micromamba",
+                ] {
+                    base_dirs.push(h.join(name));
+                }
+            }
+            for root in &[
+                "/opt/conda",
+                "/opt/miniconda3",
+                "/opt/miniforge3",
+                "/opt/anaconda3",
+                "/opt/homebrew/Caskroom/miniforge/base",
+                "/opt/homebrew/Caskroom/miniconda/base",
+                "/usr/local/miniconda3",
+                "/usr/local/anaconda3",
+            ] {
+                base_dirs.push(PathBuf::from(root));
+            }
+        }
+
+        for base in base_dirs {
+            if base.is_dir() {
+                if !envs.contains(&base) {
+                    envs.push(base.clone());
+                }
+                // Also check sub-environments in base/envs/
+                let envs_subdir = base.join("envs");
+                if envs_subdir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&envs_subdir) {
+                        for entry in entries.flatten() {
+                            let sub_p = entry.path();
+                            if sub_p.is_dir() && !envs.contains(&sub_p) {
+                                envs.push(sub_p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        envs
+    }
+
+    /// Locates the `conda` (or `mamba`/`micromamba`) CLI executable.
+    pub fn find_conda_cli(prefix: Option<&Path>) -> Option<String> {
+        // 1. Direct check in prefix condabin, Scripts, or bin
+        if let Some(p) = prefix {
+            let candidates = if cfg!(windows) {
+                vec![
+                    p.join("condabin").join("conda.bat"),
+                    p.join("Scripts").join("conda.exe"),
+                    p.join("Library").join("bin").join("conda.bat"),
+                ]
+            } else {
+                vec![
+                    p.join("bin").join("conda"),
+                    p.join("condabin").join("conda"),
+                    p.join("bin").join("mamba"),
+                    p.join("bin").join("micromamba"),
+                ]
+            };
+            for cand in candidates {
+                if cand.is_file() {
+                    return Some(cand.to_string_lossy().to_string());
+                }
+            }
+
+            // If prefix is an env (e.g. miniconda3/envs/myenv), check root conda base
+            if let Some(parent) = p.parent() {
+                if parent.file_name().and_then(|s| s.to_str()) == Some("envs") {
+                    if let Some(root) = parent.parent() {
+                        let root_cand = if cfg!(windows) {
+                            root.join("condabin").join("conda.bat")
+                        } else {
+                            root.join("bin").join("conda")
+                        };
+                        if root_cand.is_file() {
+                            return Some(root_cand.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check CONDA_EXE environment variable
+        if let Ok(exe) = std::env::var("CONDA_EXE") {
+            let p = PathBuf::from(exe);
+            if p.is_file() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+
+        // 3. Check system PATH
+        if let Ok(path_var) = std::env::var("PATH") {
+            let exe_names: &[&str] = if cfg!(windows) {
+                &[
+                    "conda.bat",
+                    "conda.exe",
+                    "mamba.bat",
+                    "mamba.exe",
+                    "micromamba.exe",
+                ]
+            } else {
+                &["conda", "mamba", "micromamba"]
+            };
+            for dir in std::env::split_paths(&path_var) {
+                for exe in exe_names {
+                    let cand = dir.join(exe);
+                    if cand.is_file() {
+                        return Some(cand.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn probe_python_environment() -> PythonEnvironment {
+        let mut candidates: Vec<String> = Vec::new();
+
+        // 1. Active virtualenv (VIRTUAL_ENV)
+        if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+            let py = if cfg!(windows) {
+                PathBuf::from(&venv).join("Scripts").join("python.exe")
+            } else {
+                PathBuf::from(&venv).join("bin").join("python")
+            };
+            if py.is_file() {
+                candidates.push(py.to_string_lossy().to_string());
+            }
+        }
+
+        // 2. Active Conda environment (CONDA_PREFIX)
+        if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
+            let py = if cfg!(windows) {
+                PathBuf::from(&prefix).join("python.exe")
+            } else {
+                PathBuf::from(&prefix).join("bin").join("python")
+            };
+            if py.is_file() {
+                let s = py.to_string_lossy().to_string();
+                if !candidates.contains(&s) {
+                    candidates.push(s);
+                }
+            }
+        }
+
+        // 3. Discovered Conda environments
+        for env in Self::discover_conda_environments() {
+            let py = if cfg!(windows) {
+                env.join("python.exe")
+            } else {
+                env.join("bin").join("python")
+            };
+            if py.is_file() {
+                let s = py.to_string_lossy().to_string();
+                if !candidates.contains(&s) {
+                    candidates.push(s);
+                }
+            }
+        }
+
+        // 4. Standard Windows locations
+        if cfg!(windows) {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
                 let py_programs = PathBuf::from(&local_app_data).join("Programs").join("Python");
                 if py_programs.is_dir() {
@@ -318,19 +567,25 @@ impl PackageManager {
                         for entry in entries.flatten() {
                             let cand = entry.path().join("python.exe");
                             if cand.is_file() {
-                                known_windows_locations.push(cand);
+                                let s = cand.to_string_lossy().to_string();
+                                if !candidates.contains(&s) {
+                                    candidates.push(s);
+                                }
                             }
                         }
                     }
                 }
             }
-            for drive in ["C:\\Python313", "C:\\Python312", "C:\\Python311", "C:\\Python310", "C:\\Python39"] {
-                known_windows_locations.push(PathBuf::from(drive).join("python.exe"));
-            }
-
-            for loc in known_windows_locations {
-                if loc.is_file() {
-                    let s = loc.to_string_lossy().to_string();
+            for drive in [
+                "C:\\Python313",
+                "C:\\Python312",
+                "C:\\Python311",
+                "C:\\Python310",
+                "C:\\Python39",
+            ] {
+                let cand = PathBuf::from(drive).join("python.exe");
+                if cand.is_file() {
+                    let s = cand.to_string_lossy().to_string();
                     if !candidates.contains(&s) {
                         candidates.push(s);
                     }
@@ -338,46 +593,156 @@ impl PackageManager {
             }
         }
 
-        for candidate in candidates {
-            let output = crate::create_hidden_command(&candidate)
-                .args(["-c", "import sys, sysconfig, os, site; print(sys.executable); print(sys.version.split()[0]); print(sysconfig.get_path('scripts') or ''); ub = getattr(site, 'USER_BASE', ''); print(os.path.join(ub, 'Scripts' if os.name == 'nt' else 'bin') if ub else '')"])
+        // 5. Standard system command names
+        let default_names: &[&str] = if cfg!(windows) {
+            &["python", "py", "python3"]
+        } else {
+            &["python3", "python"]
+        };
+        for name in default_names {
+            let s = name.to_string();
+            if !candidates.contains(&s) {
+                candidates.push(s);
+            }
+        }
+
+        struct ProbedCandidate {
+            env: PythonEnvironment,
+            score: i32,
+        }
+
+        let mut probed_list: Vec<ProbedCandidate> = Vec::new();
+
+        for candidate in &candidates {
+            let output = crate::create_hidden_command(candidate)
+                .args([
+                    "-c",
+                    "import sys, sysconfig, os, site; print(sys.executable); print(sys.version.split()[0]); print(sysconfig.get_path('scripts') or ''); ub = getattr(site, 'USER_BASE', ''); print(os.path.join(ub, 'Scripts' if os.name == 'nt' else 'bin') if ub else ''); is_conda = ('conda' in sys.version.lower()) or ('continuum' in sys.version.lower()) or os.path.exists(os.path.join(sys.prefix, 'conda-meta')); print('1' if is_conda else '0'); print(sys.prefix if is_conda else ''); print(os.path.basename(sys.prefix) if is_conda else '')",
+                ])
                 .output();
 
             if let Ok(out) = output {
                 if out.status.success() {
                     let text = String::from_utf8_lossy(&out.stdout);
                     let mut lines = text.lines();
-                    let exe_path = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                    let ver = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                    let scripts = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                    let user_scripts = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    let exe_path = lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let ver = lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let scripts = lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let user_scripts = lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let is_conda = lines.next().map(|s| s.trim() == "1").unwrap_or(false);
+                    let conda_prefix = lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    let env_name = lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
 
                     // Check if pip is available with this interpreter
-                    let pip_status = crate::create_hidden_command(&candidate)
+                    let pip_status = crate::create_hidden_command(candidate)
                         .args(["-m", "pip", "--version"])
                         .output()
                         .map(|o| o.status.success())
                         .unwrap_or(false);
 
-                    if let Some(scripts_dir) = &scripts {
-                        Self::add_to_process_path(Path::new(scripts_dir));
+                    let conda_cli_path = if is_conda {
+                        Self::find_conda_cli(conda_prefix.as_deref().map(Path::new))
+                    } else {
+                        None
+                    };
+
+                    let mut score: i32 = 10;
+                    if let Some(exe) = &exe_path {
+                        // Heavily penalize Windows Store zero-byte redirector stubs
+                        if exe.to_lowercase().contains("windowsapps") {
+                            score -= 200;
+                        }
                     }
-                    if let Some(user_scripts_dir) = &user_scripts {
-                        let p = Path::new(user_scripts_dir);
-                        if p.is_dir() {
-                            Self::add_to_process_path(p);
+                    if pip_status {
+                        score += 50;
+                    }
+                    if is_conda && conda_cli_path.is_some() {
+                        score += 25;
+                    }
+                    if let Ok(cur_conda) = std::env::var("CONDA_PREFIX") {
+                        if let Some(pfx) = &conda_prefix {
+                            if pfx.eq_ignore_ascii_case(&cur_conda) {
+                                score += 100;
+                            }
+                        }
+                    }
+                    if let Ok(cur_venv) = std::env::var("VIRTUAL_ENV") {
+                        if let Some(exe) = &exe_path {
+                            if exe.to_lowercase().contains(&cur_venv.to_lowercase()) {
+                                score += 100;
+                            }
+                        }
+                    }
+                    // Bonus if pygmentize is already in this candidate's scripts
+                    if let Some(sc) = &scripts {
+                        let cand_pyg = if cfg!(windows) {
+                            PathBuf::from(sc).join("pygmentize.exe")
+                        } else {
+                            PathBuf::from(sc).join("pygmentize")
+                        };
+                        if cand_pyg.is_file() {
+                            score += 40;
                         }
                     }
 
-                    return PythonEnvironment {
+                    let env = PythonEnvironment {
                         python_available: true,
                         pip_available: pip_status,
                         python_version: ver,
                         python_path: exe_path,
                         scripts_dir: scripts,
                         user_scripts_dir: user_scripts,
+                        is_conda,
+                        conda_prefix,
+                        conda_cli_path,
+                        environment_name: env_name,
                     };
+
+                    probed_list.push(ProbedCandidate { env, score });
                 }
+            }
+        }
+
+        // Sort descending by score
+        probed_list.sort_by(|a, b| b.score.cmp(&a.score));
+
+        if let Some(best) = probed_list.into_iter().next() {
+            if best.score > 0 {
+                if let Some(scripts_dir) = &best.env.scripts_dir {
+                    Self::add_to_process_path(Path::new(scripts_dir));
+                }
+                if let Some(user_scripts_dir) = &best.env.user_scripts_dir {
+                    let p = Path::new(user_scripts_dir);
+                    if p.is_dir() {
+                        Self::add_to_process_path(p);
+                    }
+                }
+                if let Some(prefix) = &best.env.conda_prefix {
+                    if cfg!(windows) {
+                        let p = Path::new(prefix);
+                        Self::add_to_process_path(&p.join("Library").join("bin"));
+                        Self::add_to_process_path(&p.join("Scripts"));
+                    }
+                }
+                return best.env;
             }
         }
 
@@ -388,10 +753,15 @@ impl PackageManager {
             python_path: None,
             scripts_dir: None,
             user_scripts_dir: None,
+            is_conda: false,
+            conda_prefix: None,
+            conda_cli_path: None,
+            environment_name: None,
         }
     }
 
-    /// Checks if an executable exists on PATH or in Python scripts directories.
+    /// Checks if an executable exists on PATH, Conda environments, virtual environments,
+    /// or Python scripts directories.
     pub fn find_binary_path(binary: &str) -> Option<PathBuf> {
         let exe_name = if cfg!(windows) {
             format!("{binary}.exe")
@@ -413,7 +783,7 @@ impl PackageManager {
             }
         }
 
-        // 2. Check Python scripts directory
+        // 2. Check detected Python scripts directory
         let env = Self::check_python_environment();
         if let Some(scripts_dir) = &env.scripts_dir {
             let scripts_path = PathBuf::from(scripts_dir);
@@ -424,7 +794,7 @@ impl PackageManager {
             }
         }
 
-        // 3. Check Python user-level scripts directory (e.g. from pip install --user)
+        // 3. Check detected Python user-level scripts directory (e.g. from pip install --user)
         if let Some(user_scripts_dir) = &env.user_scripts_dir {
             let user_scripts_path = PathBuf::from(user_scripts_dir);
             let candidate = user_scripts_path.join(&exe_name);
@@ -450,10 +820,74 @@ impl PackageManager {
                     Self::add_to_process_path(&bin);
                     return Some(cand_bin);
                 }
+                let lib_bin = py_dir.join("Library").join("bin");
+                let cand_lib = lib_bin.join(&exe_name);
+                if cand_lib.is_file() {
+                    Self::add_to_process_path(&lib_bin);
+                    return Some(cand_lib);
+                }
             }
         }
 
-        // 5. Check common Python scripts paths on Windows
+        // 5. Check active virtualenv (VIRTUAL_ENV)
+        if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+            let venv_path = PathBuf::from(&venv);
+            let check_dirs = if cfg!(windows) {
+                vec![venv_path.join("Scripts"), venv_path.join("bin")]
+            } else {
+                vec![venv_path.join("bin")]
+            };
+            for dir in check_dirs {
+                let cand = dir.join(&exe_name);
+                if cand.is_file() {
+                    Self::add_to_process_path(&dir);
+                    return Some(cand);
+                }
+            }
+        }
+
+        // 6. Check active Conda prefix (CONDA_PREFIX)
+        if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
+            let prefix_path = PathBuf::from(&prefix);
+            let check_dirs = if cfg!(windows) {
+                vec![
+                    prefix_path.join("Scripts"),
+                    prefix_path.join("Library").join("bin"),
+                    prefix_path.join("bin"),
+                ]
+            } else {
+                vec![prefix_path.join("bin")]
+            };
+            for dir in check_dirs {
+                let cand = dir.join(&exe_name);
+                if cand.is_file() {
+                    Self::add_to_process_path(&dir);
+                    return Some(cand);
+                }
+            }
+        }
+
+        // 7. Check all discovered Conda environments (base and named envs in ~/.conda/environments.txt)
+        for env_path in Self::discover_conda_environments() {
+            let check_dirs = if cfg!(windows) {
+                vec![
+                    env_path.join("Scripts"),
+                    env_path.join("Library").join("bin"),
+                    env_path.join("bin"),
+                ]
+            } else {
+                vec![env_path.join("bin")]
+            };
+            for dir in check_dirs {
+                let cand = dir.join(&exe_name);
+                if cand.is_file() {
+                    Self::add_to_process_path(&dir);
+                    return Some(cand);
+                }
+            }
+        }
+
+        // 8. Check common Python scripts paths on Windows
         if cfg!(windows) {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
                 let local_path = PathBuf::from(local_app_data).join("Programs").join("Python");
@@ -491,6 +925,22 @@ impl PackageManager {
                         }
                     }
                 }
+            }
+        } else {
+            // Check ~/.local/bin and /usr/local/bin on Unix
+            if let Ok(home) = std::env::var("HOME") {
+                let local_bin = PathBuf::from(home).join(".local").join("bin");
+                let cand = local_bin.join(&exe_name);
+                if cand.is_file() {
+                    Self::add_to_process_path(&local_bin);
+                    return Some(cand);
+                }
+            }
+            let usr_local_bin = PathBuf::from("/usr/local/bin");
+            let cand = usr_local_bin.join(&exe_name);
+            if cand.is_file() {
+                Self::add_to_process_path(&usr_local_bin);
+                return Some(cand);
             }
         }
 
@@ -622,66 +1072,146 @@ impl PackageManager {
         let env = Self::check_python_environment();
         if !env.python_available {
             return Err(LakeTexError::Dependency(
-                "Python was not detected on system. Please install Python (https://www.python.org) or use Native mode."
-                    .to_string(),
-            ));
-        }
-        if !env.pip_available {
-            return Err(LakeTexError::Dependency(
-                "pip package manager was not found in the detected Python installation."
+                "Python was not detected on system. Please install Python (https://www.python.org) or Conda, or use Native mode."
                     .to_string(),
             ));
         }
 
         let python_exe = env.python_path.as_deref().unwrap_or("python");
-        let mut output = crate::create_hidden_command(python_exe)
-            .args(["-m", "pip", "install", pip_pkg])
-            .output()
-            .map_err(|e| LakeTexError::Dependency(format!("Failed to spawn pip installer: {e}")))?;
+        let mut install_log: Vec<String> = Vec::new();
+        let mut install_success = false;
 
-        // If standard pip install failed (e.g. permission error in system site-packages), retry with --user
-        if !output.status.success() {
-            if let Ok(user_output) = crate::create_hidden_command(python_exe)
-                .args(["-m", "pip", "install", "--user", pip_pkg])
-                .output()
-            {
-                if user_output.status.success() {
-                    output = user_output;
+        // Strategy 1: Standard pip install
+        if env.pip_available {
+            let res = crate::create_hidden_command(python_exe)
+                .args(["-m", "pip", "install", pip_pkg])
+                .output();
+            if let Ok(out) = res {
+                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                let log_entry = format!("pip install:\n{}\n{}", stdout.trim(), stderr.trim());
+                if out.status.success() {
+                    install_success = true;
+                    install_log.push(log_entry);
+                } else {
+                    install_log.push(format!(
+                        "pip install (exit {:?}):\n{}\n{}",
+                        out.status.code(),
+                        stdout.trim(),
+                        stderr.trim()
+                    ));
+                }
+            }
+
+            // Strategy 2: If standard pip failed (e.g. system permissions), retry with --user
+            if !install_success {
+                let res_user = crate::create_hidden_command(python_exe)
+                    .args(["-m", "pip", "install", "--user", pip_pkg])
+                    .output();
+                if let Ok(out) = res_user {
+                    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                    let log_entry = format!("pip install --user:\n{}\n{}", stdout.trim(), stderr.trim());
+                    if out.status.success() {
+                        install_success = true;
+                        install_log.push(log_entry);
+                    } else {
+                        install_log.push(format!(
+                            "pip install --user (exit {:?}):\n{}\n{}",
+                            out.status.code(),
+                            stdout.trim(),
+                            stderr.trim()
+                        ));
+                    }
+                }
+            }
+
+            // Strategy 3: If still failed (e.g. PEP 668 externally-managed-environment), retry with --break-system-packages
+            if !install_success {
+                let res_break = crate::create_hidden_command(python_exe)
+                    .args(["-m", "pip", "install", "--break-system-packages", pip_pkg])
+                    .output();
+                if let Ok(out) = res_break {
+                    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                    let log_entry = format!(
+                        "pip install --break-system-packages:\n{}\n{}",
+                        stdout.trim(),
+                        stderr.trim()
+                    );
+                    if out.status.success() {
+                        install_success = true;
+                        install_log.push(log_entry);
+                    } else {
+                        install_log.push(format!(
+                            "pip install --break-system-packages (exit {:?}):\n{}\n{}",
+                            out.status.code(),
+                            stdout.trim(),
+                            stderr.trim()
+                        ));
+                    }
                 }
             }
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if output.status.success() {
-            Self::invalidate_python_environment();
-            let refreshed = Self::check_python_environment();
-            if let Some(scripts) = &refreshed.scripts_dir {
-                Self::add_to_process_path(Path::new(scripts));
-            }
-            if let Some(user_scripts) = &refreshed.user_scripts_dir {
-                let p = Path::new(user_scripts);
-                if p.is_dir() {
-                    Self::add_to_process_path(p);
+        // Strategy 4: If pip failed or was unavailable, and this is a Conda environment, fallback to conda / mamba / micromamba
+        if !install_success && env.is_conda {
+            if let Some(conda_cli) = &env.conda_cli_path {
+                let mut cmd = crate::create_hidden_command(conda_cli);
+                cmd.arg("install").arg("-y").arg("-c").arg("conda-forge");
+                if let Some(prefix) = &env.conda_prefix {
+                    cmd.arg("-p").arg(prefix);
+                }
+                cmd.arg(pip_pkg);
+                if let Ok(out) = cmd.output() {
+                    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                    let log_entry = format!("conda install:\n{}\n{}", stdout.trim(), stderr.trim());
+                    if out.status.success() {
+                        install_success = true;
+                        install_log.push(log_entry);
+                    } else {
+                        install_log.push(format!(
+                            "conda install (exit {:?}):\n{}\n{}",
+                            out.status.code(),
+                            stdout.trim(),
+                            stderr.trim()
+                        ));
+                    }
                 }
             }
-            if let Some(found_path) = Self::find_binary_path(spec.binary_name) {
-                if let Some(parent) = found_path.parent() {
+        }
+
+        if !install_success {
+            return Err(LakeTexError::Dependency(format!(
+                "Failed to install package '{pip_pkg}'. Attempted installer output:\n{}",
+                install_log.join("\n---\n")
+            )));
+        }
+
+        // Post-installation verification gate: ensure binary actually exists on disk
+        Self::invalidate_python_environment();
+        let _ = Self::check_python_environment();
+        let found_path = Self::find_binary_path(spec.binary_name);
+
+        match found_path {
+            Some(path) => {
+                if let Some(parent) = path.parent() {
                     Self::add_to_process_path(parent);
                 }
+                Ok(format!(
+                    "Successfully installed and verified '{dep_name}' at: {}\n{}",
+                    path.display(),
+                    install_log.last().cloned().unwrap_or_default().trim()
+                ))
             }
-            Ok(format!(
-                "Successfully installed '{dep_name}' via pip.\n{}",
-                stdout.trim()
-            ))
-        } else {
-            Err(LakeTexError::Dependency(format!(
-                "pip install {dep_name} failed with exit code {:?}:\n{}\n{}",
-                output.status.code(),
-                stdout,
-                stderr
-            )))
+            None => {
+                Err(LakeTexError::Dependency(format!(
+                    "Package installation for '{pip_pkg}' completed, but the expected binary '{}' was not located in PATH or any Python scripts directory.\nLogs:\n{}",
+                    spec.binary_name,
+                    install_log.join("\n")
+                )))
+            }
         }
     }
 }

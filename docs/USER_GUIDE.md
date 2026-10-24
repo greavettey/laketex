@@ -137,10 +137,19 @@ laketex check document.tex --format json
 laketex outline document.tex
 ```
 
-### 4. Inspect imported packages:
+### 4. Inspect imported packages & external tool dependencies:
 ```bash
+# List all declared LaTeX packages in the document
 laketex packages document.tex
+
+# Audit external tool dependencies (Pygments, PythonTeX, etc.) and inspect Python/Conda status
+laketex packages document.tex --check-deps
+
+# Automatically install missing dependencies with consent (supports pip and Conda)
+laketex packages document.tex --install-deps --yes
 ```
+Laketex automatically inspects system prerequisites, detecting active Conda environments (`CONDA_PREFIX`), virtual environments (`VIRTUAL_ENV`), and registry entries in `~/.conda/environments.txt`. If `pip` is absent or restricted, Laketex seamlessly falls back to `conda install -y -c conda-forge`.
+
 
 ### 5. Compare Tectonic vs Native Engine Visual Parity:
 ```bash

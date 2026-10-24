@@ -184,9 +184,21 @@ impl Sidebar {
                             let py_env = PackageManager::check_python_environment();
                             if py_env.python_available {
                                 let ver = py_env.python_version.as_deref().unwrap_or("Ready");
+                                let mgr = if py_env.pip_available {
+                                    "pip ready"
+                                } else if py_env.conda_cli_path.is_some() {
+                                    "conda ready"
+                                } else {
+                                    "no package manager"
+                                };
+                                let conda_tag = if py_env.is_conda {
+                                    format!(" [Conda: {}]", py_env.environment_name.as_deref().unwrap_or("env"))
+                                } else {
+                                    String::new()
+                                };
                                 ui.colored_label(
                                     Color32::from_rgb(152, 195, 121),
-                                    format!("✓ Python {} (pip ready)", ver),
+                                    format!("✓ Python {ver}{conda_tag} ({mgr})"),
                                 );
                             } else {
                                 ui.colored_label(

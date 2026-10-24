@@ -467,13 +467,11 @@ impl LakeTexApp {
         }
     }
 
-    /// Inserts LaTeX code snippet text into the editor (before `\end{document}` if present).
-    pub fn insert_snippet_into_editor(&mut self, snippet: &str) {
-        if let Some(pos) = self.document.content.rfind("\\end{document}") {
-            self.document.content.insert_str(pos, snippet);
-        } else {
-            self.document.content.push_str(snippet);
-        }
+    /// Inserts LaTeX code snippet text into the editor (at the current caret position, or before `\end{document}` if not focused).
+    pub fn insert_snippet_into_editor(&mut self, ctx: &egui::Context, snippet: &str) {
+        self.editor_panel
+            .insert_snippet_at_caret(ctx, &mut self.document.content, snippet);
+        self.document.is_dirty = true;
         self.document.refresh_caches();
         self.recompute_native_layout();
         if self.auto_compile {
@@ -497,14 +495,14 @@ impl LakeTexApp {
                     "\n\\begin{{figure}}[htbp]\n    \\centering\n    \\includegraphics[width=0.8\\linewidth]{{{forward_path}}}\n    \\caption{{{label}}}\n    \\label{{fig:{label}}}\n\\end{{figure}}\n"
                 );
                 ctx.copy_text(snippet.clone());
-                self.insert_snippet_into_editor(&snippet);
+                self.insert_snippet_into_editor(ctx, &snippet);
                 self.status_message = format!("Inserted figure: {forward_path}");
             }
             ProjectAction::InsertInput { relative_path } => {
                 let forward_path = relative_path.replace('\\', "/");
                 let snippet = format!("\n\\input{{{forward_path}}}\n");
                 ctx.copy_text(snippet.clone());
-                self.insert_snippet_into_editor(&snippet);
+                self.insert_snippet_into_editor(ctx, &snippet);
                 self.status_message = format!("Inserted input: {forward_path}");
             }
             ProjectAction::CopyToClipboard(text) => {
@@ -715,19 +713,30 @@ impl LakeTexApp {
                     if py_env.python_available {
                         let ver = py_env.python_version.as_deref().unwrap_or("Ready");
                         let path = py_env.python_path.as_deref().unwrap_or("python");
+                        let conda_tag = if py_env.is_conda {
+                            let env_name = py_env.environment_name.as_deref().unwrap_or("env");
+                            format!(" [Conda: {env_name}]")
+                        } else {
+                            String::new()
+                        };
                         ui.colored_label(
                             Color32::from_rgb(152, 195, 121),
-                            format!("✓ Python {ver} ({path})"),
+                            format!("✓ Python {ver}{conda_tag} ({path})"),
                         );
                         if py_env.pip_available {
                             ui.colored_label(
                                 Color32::from_rgb(152, 195, 121),
                                 "✓ pip package manager available",
                             );
+                        } else if py_env.is_conda && py_env.conda_cli_path.is_some() {
+                            ui.colored_label(
+                                Color32::from_rgb(152, 195, 121),
+                                "✓ conda package manager available (will install via conda-forge)",
+                            );
                         } else {
                             ui.colored_label(
                                 Color32::from_rgb(224, 108, 117),
-                                "✗ pip package manager missing",
+                                "✗ pip / conda package manager missing",
                             );
                         }
                     } else {
@@ -751,11 +760,24 @@ impl LakeTexApp {
                     }
                 });
 
+                let py_env = PackageManager::check_python_environment();
+                let installer_tool = if !py_env.pip_available && py_env.is_conda && py_env.conda_cli_path.is_some() {
+                    "conda"
+                } else {
+                    "pip"
+                };
+                let install_cmd_str = if installer_tool == "conda" {
+                    let pkg = dep.pip_package.as_deref().unwrap_or(&dep.name);
+                    format!("conda install -y -c conda-forge {pkg}")
+                } else {
+                    dep.install_command.clone()
+                };
+
                 ui.add_space(6.0);
-                ui.label("Would you like Laketex to install this package using pip?");
+                ui.label(format!("Would you like Laketex to install this package using {installer_tool}?"));
                 ui.colored_label(
                     Color32::from_rgb(97, 175, 239),
-                    format!("Command: {}", dep.install_command),
+                    format!("Command: {install_cmd_str}"),
                 );
 
                 if let Some(status) = &self.dependency_prompt.install_status {
@@ -784,12 +806,17 @@ impl LakeTexApp {
                 ui.horizontal(|ui| {
                     let py_env = PackageManager::check_python_environment();
                     let can_install = py_env.python_available
-                        && py_env.pip_available
+                        && (py_env.pip_available || (py_env.is_conda && py_env.conda_cli_path.is_some()))
                         && !self.dependency_prompt.is_installing;
 
                     if self.dependency_prompt.is_installing {
                         ui.spinner();
-                        ui.label("Installing package via pip, please wait...");
+                        let wait_msg = if !py_env.pip_available && py_env.is_conda {
+                            "Installing package via conda, please wait..."
+                        } else {
+                            "Installing package via pip, please wait..."
+                        };
+                        ui.label(wait_msg);
                     } else {
                         if ui
                             .add_enabled(
@@ -1208,6 +1235,7 @@ impl eframe::App for LakeTexApp {
                         SidebarAction::InsertPackage(pkg) => {
                             self.document.content =
                                 PackageManager::insert_package(&self.document.content, &pkg);
+                            self.document.is_dirty = true;
                             self.document.refresh_caches();
                             self.recompute_native_layout();
                             if self.auto_compile {
@@ -1215,12 +1243,7 @@ impl eframe::App for LakeTexApp {
                             }
                         }
                         SidebarAction::InsertSnippet(snippet) => {
-                            self.document.content.push_str(&snippet);
-                            self.document.refresh_caches();
-                            self.recompute_native_layout();
-                            if self.auto_compile {
-                                self.trigger_compilation();
-                            }
+                            self.insert_snippet_into_editor(ctx, &snippet);
                         }
                         SidebarAction::PromptInstallDependency(dep) => {
                             self.prompt_dependency_consent(dep);

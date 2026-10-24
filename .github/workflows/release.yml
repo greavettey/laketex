@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+      - master
+    paths:
+      - 'Cargo.toml'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -15,8 +20,50 @@ permissions:
   contents: write
 
 jobs:
+  check-version:
+    name: Check Version & Tag
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine if release should run
+        id: check
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+            echo "Manual release dispatch for tag: $TAG"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "Tag push detected: $TAG"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+            TAG="v${VERSION}"
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              echo "Release tag $TAG already exists on remote; skipping automated release on branch push."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "New version $VERSION detected in Cargo.toml without an existing tag! Proceeding with release for $TAG."
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   build-binaries:
     name: Build (${{ matrix.target }})
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -35,7 +82,7 @@ jobs:
             bin_name: laketex
             archive_ext: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             bin_name: laketex
             archive_ext: tar.gz
 
@@ -53,54 +100,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            pkg-config \
             libxcb-render0-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
+            libxkbcommon-x11-dev \
             libfontconfig1-dev \
             libgl1-mesa-dev \
-            libasound2-dev
+            libasound2-dev \
+            libgtk-3-dev \
+            libssl-dev
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
-
-      - name: Determine tag name
-        id: vars
-        shell: bash
-        run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
-            TAG="v${VERSION}"
-          fi
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package Windows archive (zip)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $tag = "${{ steps.vars.outputs.tag }}"
+          $tag = "${{ needs.check-version.outputs.tag }}"
           $archiveDir = "laketex-${tag}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $archiveDir
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" -Destination $archiveDir/
           if (Test-Path "pdfium.dll") {
             Copy-Item "pdfium.dll" -Destination $archiveDir/
           }
+          if (Test-Path "target/${{ matrix.target }}/release/pdfium.dll") {
+            Copy-Item "target/${{ matrix.target }}/release/pdfium.dll" -Destination $archiveDir/
+          }
           if (Test-Path "README.md") {
             Copy-Item "README.md" -Destination $archiveDir/
           }
           $zipName = "${archiveDir}.zip"
-          Compress-Archive -Path "$archiveDir/*" -DestinationPath $zipName
+          Compress-Archive -Path "$archiveDir/*" -DestinationPath $zipName -Force
           Get-FileHash -Algorithm SHA256 $zipName | ForEach-Object { "$($_.Hash.ToLower())  $zipName" } | Out-File -FilePath "${zipName}.sha256" -Encoding ascii
 
       - name: Package Unix archive (tar.gz)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          TAG="${{ steps.vars.outputs.tag }}"
+          TAG="${{ needs.check-version.outputs.tag }}"
           ARCHIVE_DIR="laketex-${TAG}-${{ matrix.target }}"
           mkdir -p "$ARCHIVE_DIR"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "$ARCHIVE_DIR/"
@@ -119,25 +159,28 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: build-binaries
+    needs: [check-version, build-binaries]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Determine tag name
-        id: vars
+      - name: Ensure Git tag exists
         shell: bash
         run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${{ needs.check-version.outputs.tag }}"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists on remote."
           else
-            VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
-            TAG="v${VERSION}"
+            echo "Tag $TAG does not exist. Creating and pushing tag..."
+            git tag "$TAG"
+            git push origin "$TAG"
           fi
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -155,10 +198,7 @@ jobs:
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: LakeTeX ${{ steps.vars.outputs.tag }}
+          tag_name: ${{ needs.check-version.outputs.tag }}
+          name: LakeTeX ${{ needs.check-version.outputs.tag }}
           files: |
             release-dist/*
-          generate_release_notes: true
-          draft: false
-          prerelease: false

@@ -1359,3 +1359,41 @@ fn test_non_toolbar_panel_headers_vertical_consistency() {
     assert_eq!(sidebar_sep_y, editor_sep_y, "Sidebar and editor must start at identical Y coordinate");
     assert_eq!(editor_sep_y, viewer_sep_y, "Editor and viewer must start at identical Y coordinate");
 }
+
+#[test]
+fn test_conda_and_venv_discovery_and_binary_resolution() {
+    use laketex::document::packages::PackageManager;
+
+    // 1. Verify conda environment discovery function
+    let conda_envs = PackageManager::discover_conda_environments();
+    for env in &conda_envs {
+        assert!(env.is_dir(), "Discovered Conda environment must be a valid directory: {:?}", env);
+    }
+
+    // 2. Verify check_python_environment metadata
+    let env = PackageManager::check_python_environment();
+    if env.python_available {
+        if env.is_conda {
+            assert!(env.conda_prefix.is_some(), "Conda environment must expose conda_prefix");
+            assert!(env.environment_name.is_some(), "Conda environment must expose environment_name");
+        }
+        if let Some(cli) = &env.conda_cli_path {
+            assert!(std::path::Path::new(cli).exists(), "Conda CLI path must exist if resolved: {}", cli);
+        }
+    }
+
+    // 3. Security and consent enforcement tests
+    let unapproved_res = PackageManager::install_dependency("malicious_unapproved_pkg", true);
+    assert!(unapproved_res.is_err(), "Must reject unapproved package from whitelist");
+
+    let no_consent_res = PackageManager::install_dependency("pygments", false);
+    assert!(no_consent_res.is_err(), "Must reject installation without explicit user consent");
+
+    // 4. Test binary resolution consistency
+    if PackageManager::is_binary_available("pygmentize") {
+        let bin_path = PackageManager::find_binary_path("pygmentize");
+        assert!(bin_path.is_some(), "Must locate binary path if available");
+        let path = bin_path.unwrap();
+        assert!(path.is_file(), "Binary path must be a file: {:?}", path);
+    }
+}

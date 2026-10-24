@@ -7,6 +7,10 @@ A lightweight, portable LaTeX editor, live viewer, and typesetting studio writte
 
 Laketex is designed as a single, self-contained executable that gives you a complete, publication-grade LaTeX writing environment with zero setup. It packages a bundled Tectonic engine for full TeX package compatibility alongside an in-process, pure-Rust typesetting engine for instant sub-millisecond drafting, high-DPI dual-mode vector viewing, bi-directional SyncTeX navigation, a visual parity testing harness, and a headless REST API enabling agentic document creation.
 
+> *Why call it "Laketex"?*
+> 
+> I was born and raised in Muskoka, which is a region of Ontario containing over 1600 lakes. I moved to a city for post-secondary, and to put it simply, I miss the lake.  
+
 ---
 
 ## The Ideas Behind the Project
@@ -142,9 +146,12 @@ Over the course of developing Laketex, we built a comprehensive set of features 
 - **Deep Render Audit**: The `debug` engine scans documents for unclosed matrix delimiters, missing `amsmath` imports, unbalanced braces, and math commands placed in plain text.
 - **One-Click Export**: Easily copy formatted error reports to your clipboard or export them to disk (`.md`, `.json`, `.log`) for collaboration or debugging.
 
-### Safe Package Dependency Consent
-- When documents import packages that depend on external host tools (such as `minted` requiring Python's `pygments`), Laketex inspects system prerequisites and prompts for explicit user permission before installing anything.
-- If consent is declined or tools are unavailable, Laketex automatically injects safe draft fallback options so your document continues to compile without crashing.
+### Safe Package Dependency Consent & Conda Integration
+- When documents import packages that depend on external host tools (such as `minted` requiring Python's `pygments`, or `pythontex`), Laketex inspects system prerequisites and prompts for explicit user permission before installing anything.
+- **Robust Conda & VirtualEnv Support**: Laketex automatically discovers active virtual environments (`VIRTUAL_ENV`), active Conda environments (`CONDA_PREFIX`), and all environments registered in `~/.conda/environments.txt`. It supports Miniconda, Anaconda, Miniforge, Mambaforge, and Micromamba across Windows, macOS, and Linux.
+- **Multi-Strategy Installation & Fallback**: Package installation tries `pip`, user-level install (`--user`), PEP 668 managed environment override (`--break-system-packages`), and seamlessly falls back to `conda install -y -c conda-forge` if `pip` is absent in a Conda environment.
+- **Post-Install Verification**: Never fails silently—Laketex validates that the required binary exists on disk before closing the modal, and automatically injects containing scripts/bin paths into the compiler process `PATH` so `shell-escape` succeeds immediately.
+- If consent is declined or tools are unavailable, Laketex automatically injects safe draft fallback options (`\PassOptionsToPackage{draft}{minted}`) so your document continues to compile cleanly without crashing.
 
 ### Working Directory Project Manager (`Ctrl+P`)
 - Integrated project files tree for multi-file LaTeX manuscripts.

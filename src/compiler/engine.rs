@@ -140,7 +140,11 @@ impl CompilerEngine {
             exe_dir.pop();
             let local_path = exe_dir.join(&exe_name);
             if local_path.is_file() {
-                return Some(local_path);
+                if let Ok(meta) = local_path.metadata() {
+                    if meta.len() > 1_000_000 || kind != EngineKind::Tectonic {
+                        return Some(local_path);
+                    }
+                }
             }
         }
 
@@ -148,7 +152,11 @@ impl CompilerEngine {
         if let Some(cache_bin) = Self::laketex_bin_dir() {
             let cached_path = cache_bin.join(&exe_name);
             if cached_path.is_file() {
-                return Some(cached_path);
+                if let Ok(meta) = cached_path.metadata() {
+                    if meta.len() > 1_000_000 || kind != EngineKind::Tectonic {
+                        return Some(cached_path);
+                    }
+                }
             }
         }
 
@@ -192,6 +200,7 @@ impl CompilerEngine {
             std::env::var("HOME")
                 .ok()
                 .map(|p| PathBuf::from(p).join(".cache").join("laketex").join("bin"))
+                .or_else(|| Some(std::env::temp_dir().join("laketex").join("bin")))
         }
     }
 
@@ -295,9 +304,9 @@ impl CompilerEngine {
             None if kind == EngineKind::Tectonic => {
                 match crate::compiler::provisioner::Provisioner::provision_tectonic(|_, _| {}) {
                     Ok(p) => p,
-                    Err(_) => {
+                    Err(e) => {
                         return Err(LakeTexError::EngineNotFound(format!(
-                            "{} not found and automated download failed",
+                            "{} not found and automated download failed: {e}",
                             kind.display_name()
                         )));
                     }
@@ -548,7 +557,12 @@ impl CompilerEngine {
                         let minted_msg = if has_pygmentize {
                             "Package 'minted' compiled in fallback draft mode: Pygments ('pygmentize') was found, but shell-escape execution failed. The document was typeset without syntax highlighting.".to_string()
                         } else {
-                            "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string()
+                            let py_env = crate::document::packages::PackageManager::check_python_environment();
+                            if py_env.is_conda {
+                                "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'conda install -c conda-forge pygments' or 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string()
+                            } else {
+                                "Package 'minted' compiled in fallback draft mode: Pygments is not installed or shell-escape was restricted. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string()
+                            }
                         };
                         retry_diags.push(Diagnostic {
                             severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
