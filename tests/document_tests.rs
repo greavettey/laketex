@@ -1397,3 +1397,47 @@ fn test_conda_and_venv_discovery_and_binary_resolution() {
         assert!(path.is_file(), "Binary path must be a file: {:?}", path);
     }
 }
+
+
+#[test]
+fn test_shadow_subdocument_staging_and_cleanup() {
+    use laketex::compiler::engine::{CompileOptions, CompilerEngine, EngineKind};
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().expect("Failed to create tempdir");
+    let chapters_dir = dir.path().join("chapters");
+    fs::create_dir_all(&chapters_dir).expect("Failed to create chapters directory");
+
+    let main_tex = dir.path().join("main.tex");
+    let intro_tex = chapters_dir.join("intro.tex");
+    let original_disk_content = "\\section{Original Disk Title}\nDisk body text.\n";
+    let unsaved_editor_content = "\\section{Unsaved Shadow Title}\nUnsaved buffer text.\n";
+
+    let master_source = "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}\n";
+    fs::write(&main_tex, master_source).unwrap();
+    fs::write(&intro_tex, original_disk_content).unwrap();
+
+    let res = CompilerEngine::compile_with_options(
+        master_source,
+        EngineKind::Tectonic,
+        &CompileOptions {
+            work_dir: Some(dir.path().to_path_buf()),
+            doc_name: Some("main.tex".to_string()),
+            allow_shell_escape: false,
+            shadow_subdocument: Some((intro_tex.clone(), unsaved_editor_content.to_string())),
+        },
+    )
+    .expect("compile_with_options failed");
+
+    assert!(res.success, "Shadow subdocument compilation should succeed: {}", res.stderr);
+    assert!(res.pdf_bytes.is_some());
+
+    // 1. Real child file on disk must remain completely untouched
+    let on_disk_after = fs::read_to_string(&intro_tex).unwrap();
+    assert_eq!(on_disk_after, original_disk_content);
+
+    // 2. Temporary shadow file must be cleaned up by ShadowCleanupGuard
+    let shadow_file = chapters_dir.join(".laketex_shadow_intro.tex");
+    assert!(!shadow_file.exists(), "Shadow file must be removed after compilation");
+}

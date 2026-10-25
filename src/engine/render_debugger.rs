@@ -300,7 +300,15 @@ impl RenderDebugger {
             if trimmed.contains("\\begin{equation") || trimmed.contains("\\begin{align") || trimmed.contains("\\begin{gather") {
                 in_equation = true;
             }
-            if trimmed.contains("\\[") || trimmed.contains("$$") {
+            let dollar_pair_count = trimmed.matches("$$").count();
+            let mut opened_dollars_this_line = false;
+            if trimmed.contains("\\[") {
+                in_display_math = true;
+            }
+            if dollar_pair_count == 1 && !in_display_math {
+                in_display_math = true;
+                opened_dollars_this_line = true;
+            } else if dollar_pair_count >= 2 {
                 in_display_math = true;
             }
 
@@ -447,7 +455,10 @@ impl RenderDebugger {
             if trimmed.contains("\\end{equation") || trimmed.contains("\\end{align") || trimmed.contains("\\end{gather") {
                 in_equation = false;
             }
-            if trimmed.contains("\\]") || (trimmed.contains("$$") && in_display_math) {
+            if trimmed.contains("\\]")
+                || dollar_pair_count >= 2
+                || (dollar_pair_count == 1 && in_display_math && !opened_dollars_this_line)
+            {
                 in_display_math = false;
             }
         }
@@ -891,5 +902,23 @@ A = \begin{pmatrix}
         assert_eq!(item.command, "linewidth=");
         assert_eq!(item.severity, RenderIssueSeverity::Error);
         assert!(item.suggested_fix.contains("line width=1pt"));
+    }
+
+    #[test]
+    fn test_audit_matrices_multiline_double_dollar() {
+        let tex = r#"
+\documentclass{article}
+\usepackage{amsmath}
+\begin{document}
+$$
+\begin{pmatrix}
+1 & 2 \\
+3 & 4
+\end{pmatrix}
+$$
+\end{document}
+"#;
+        let report = RenderDebugger::scan(tex, "dollar_matrix.tex", None);
+        assert_eq!(report.matrix_issue_count, 0, "Multi-line $$ block must be recognized as math mode");
     }
 }

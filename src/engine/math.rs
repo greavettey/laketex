@@ -177,7 +177,7 @@ impl MathRenderer {
         for row in rows {
             html.push_str("<tr>");
             for cell in row {
-                let cell_html = Self::formula_to_html(cell);
+                let cell_html = Self::formula_to_html_inner(cell);
                 html.push_str(&format!("<td class=\"m-cell\">{cell_html}</td>"));
             }
             html.push_str("</tr>");
@@ -239,8 +239,8 @@ impl MathRenderer {
                         } else {
                             String::new()
                         };
-                        let fmt_num = Self::formula_to_html(&num);
-                        let fmt_den = Self::formula_to_html(&den);
+                        let fmt_num = Self::formula_to_html_inner(&num);
+                        let fmt_den = Self::formula_to_html_inner(&den);
                         result.push_str(&format!(
                             "<span class=\"fraction\"><span class=\"num\">{fmt_num}</span><span class=\"den\">{fmt_den}</span></span>"
                         ));
@@ -313,9 +313,9 @@ impl MathRenderer {
                     }
                     if chars.peek() == Some(&'{') {
                         let radicand = Self::extract_balanced_braces(&mut chars);
-                        let fmt_radicand = Self::formula_to_html(&radicand);
+                        let fmt_radicand = Self::formula_to_html_inner(&radicand);
                         if let Some(deg) = root_degree {
-                            let fmt_deg = Self::formula_to_html(&deg);
+                            let fmt_deg = Self::formula_to_html_inner(&deg);
                             result.push_str(&format!(
                                 "<span class=\"sqrt\"><sup>{fmt_deg}</sup><span class=\"radical\">√</span><span class=\"radicand\">{fmt_radicand}</span></span>"
                             ));
@@ -374,7 +374,7 @@ impl MathRenderer {
                     String::new()
                 };
                 if !sup_content.is_empty() {
-                    let formatted = Self::formula_to_html(&sup_content);
+                    let formatted = Self::formula_to_html_inner(&sup_content);
                     result.push_str(&format!("<sup>{formatted}</sup>"));
                     continue;
                 }
@@ -394,7 +394,7 @@ impl MathRenderer {
                     String::new()
                 };
                 if !sub_content.is_empty() {
-                    let formatted = Self::formula_to_html(&sub_content);
+                    let formatted = Self::formula_to_html_inner(&sub_content);
                     result.push_str(&format!("<sub>{formatted}</sub>"));
                     continue;
                 }
@@ -406,12 +406,65 @@ impl MathRenderer {
         result
     }
 
+    fn replace_macro_balanced(
+        text: &str,
+        cmd_name: &str,
+        mut replacer: impl FnMut(&str) -> String,
+    ) -> String {
+        let mut result = String::new();
+        let mut chars = text.chars().peekable();
+        let mut inside_tag = false;
+
+        while let Some(c) = chars.next() {
+            if c == '<' {
+                inside_tag = true;
+                result.push(c);
+                continue;
+            }
+            if c == '>' {
+                inside_tag = false;
+                result.push(c);
+                continue;
+            }
+            if inside_tag {
+                result.push(c);
+                continue;
+            }
+            if c == '\\' {
+                let mut cmd = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc.is_alphabetic() {
+                        cmd.push(chars.next().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+                if cmd == cmd_name && chars.peek() == Some(&'{') {
+                    let inner = Self::extract_balanced_braces(&mut chars);
+                    result.push_str(&replacer(&inner));
+                    continue;
+                }
+                result.push('\\');
+                result.push_str(&cmd);
+                continue;
+            }
+            result.push(c);
+        }
+
+        result
+    }
+
     /// Converts a LaTeX math formula into semantic, publication-grade HTML
     pub fn formula_to_html(formula: &str) -> String {
-        // Pre-escape mathematical relational operators to valid XML/HTML entities
-        let mut text = formula
+        // Pre-escape mathematical relational operators to valid XML/HTML entities once at entry
+        let escaped = formula
             .replace('<', "&lt;")
             .replace('>', "&gt;");
+        Self::formula_to_html_inner(&escaped)
+    }
+
+    fn formula_to_html_inner(formula: &str) -> String {
+        let mut text = formula.to_string();
 
         // 1. Convert any matrix environments to HTML tables
         while let Some((start, end, env, rows)) = Self::parse_matrix_environment(&text) {
@@ -425,43 +478,25 @@ impl MathRenderer {
         // 3. Convert square roots \sqrt{radicand}
         text = Self::format_sqrt_html(&text);
 
-        // 4. Convert font style macros
-        for prefix in ["\\mathbf{", "\\bm{", "\\boldsymbol{"] {
-            while let Some(pos) = text.find(prefix) {
-                if let Some(end) = text[pos + prefix.len()..].find('}') {
-                    let inner = &text[pos + prefix.len()..pos + prefix.len() + end];
-                    let formatted_inner = Self::formula_to_html(inner);
-                    let rep = format!("<strong class=\"math-bold\">{formatted_inner}</strong>");
-                    text.replace_range(pos..pos + prefix.len() + 1 + end, &rep);
-                } else {
-                    break;
-                }
-            }
+        // 4. Convert font style macros with balanced brace extraction
+        for cmd_name in ["mathbf", "bm", "boldsymbol"] {
+            text = Self::replace_macro_balanced(&text, cmd_name, |inner| {
+                let formatted_inner = Self::formula_to_html_inner(inner);
+                format!("<strong class=\"math-bold\">{formatted_inner}</strong>")
+            });
         }
 
-        for prefix in ["\\mathrm{", "\\text{", "\\textnormal{"] {
-            while let Some(pos) = text.find(prefix) {
-                if let Some(end) = text[pos + prefix.len()..].find('}') {
-                    let inner = &text[pos + prefix.len()..pos + prefix.len() + end];
-                    let rep = format!("<span class=\"math-roman\">{inner}</span>");
-                    text.replace_range(pos..pos + prefix.len() + 1 + end, &rep);
-                } else {
-                    break;
-                }
-            }
+        for cmd_name in ["mathrm", "text", "textnormal"] {
+            text = Self::replace_macro_balanced(&text, cmd_name, |inner| {
+                format!("<span class=\"math-roman\">{inner}</span>")
+            });
         }
 
-        for prefix in ["\\mathit{"] {
-            while let Some(pos) = text.find(prefix) {
-                if let Some(end) = text[pos + prefix.len()..].find('}') {
-                    let inner = &text[pos + prefix.len()..pos + prefix.len() + end];
-                    let formatted_inner = Self::formula_to_html(inner);
-                    let rep = format!("<em class=\"math-italic\">{formatted_inner}</em>");
-                    text.replace_range(pos..pos + prefix.len() + 1 + end, &rep);
-                } else {
-                    break;
-                }
-            }
+        for cmd_name in ["mathit"] {
+            text = Self::replace_macro_balanced(&text, cmd_name, |inner| {
+                let formatted_inner = Self::formula_to_html_inner(inner);
+                format!("<em class=\"math-italic\">{formatted_inner}</em>")
+            });
         }
 
         // 5. Convert superscripts and subscripts to <sup> and <sub>
@@ -540,23 +575,15 @@ impl MathRenderer {
 
         // Combining Accents
         let accents = [
-            ("\\hat{", "\u{0302}"),
-            ("\\vec{", "\u{20D7}"),
-            ("\\bar{", "\u{0304}"),
-            ("\\dot{", "\u{0307}"),
-            ("\\ddot{", "\u{0308}"),
-            ("\\tilde{", "\u{0303}"),
+            ("hat", "\u{0302}"),
+            ("vec", "\u{20D7}"),
+            ("bar", "\u{0304}"),
+            ("dot", "\u{0307}"),
+            ("ddot", "\u{0308}"),
+            ("tilde", "\u{0303}"),
         ];
-        for (prefix, mark) in accents {
-            while let Some(pos) = text.find(prefix) {
-                if let Some(end) = text[pos + prefix.len()..].find('}') {
-                    let base = &text[pos + prefix.len()..pos + prefix.len() + end];
-                    let combined = format!("{base}{mark}");
-                    text.replace_range(pos..pos + prefix.len() + 1 + end, &combined);
-                } else {
-                    break;
-                }
-            }
+        for (cmd_name, mark) in accents {
+            text = Self::replace_macro_balanced(&text, cmd_name, |base| format!("{base}{mark}"));
         }
 
         text
@@ -824,35 +851,20 @@ impl MathRenderer {
 
         // Combining Accents
         let accents = [
-            ("\\hat{", "\u{0302}"),
-            ("\\vec{", "\u{20D7}"),
-            ("\\bar{", "\u{0304}"),
-            ("\\dot{", "\u{0307}"),
-            ("\\ddot{", "\u{0308}"),
-            ("\\tilde{", "\u{0303}"),
+            ("hat", "\u{0302}"),
+            ("vec", "\u{20D7}"),
+            ("bar", "\u{0304}"),
+            ("dot", "\u{0307}"),
+            ("ddot", "\u{0308}"),
+            ("tilde", "\u{0303}"),
         ];
-        for (prefix, mark) in accents {
-            while let Some(pos) = text.find(prefix) {
-                if let Some(end) = text[pos + prefix.len()..].find('}') {
-                    let base = &text[pos + prefix.len()..pos + prefix.len() + end];
-                    let combined = format!("{base}{mark}");
-                    text.replace_range(pos..pos + prefix.len() + 1 + end, &combined);
-                } else {
-                    break;
-                }
-            }
+        for (cmd_name, mark) in accents {
+            text = Self::replace_macro_balanced(&text, cmd_name, |base| format!("{base}{mark}"));
         }
 
         // Clean up font style wrappers: \mathbf{...}, \mathrm{...}, \mathit{...}, \text{...}
-        for prefix in ["\\mathbf{", "\\mathrm{", "\\mathit{", "\\bm{", "\\text{"] {
-            while let Some(pos) = text.find(prefix) {
-                if let Some(end) = text[pos + prefix.len()..].find('}') {
-                    let inner = text[pos + prefix.len()..pos + prefix.len() + end].to_string();
-                    text.replace_range(pos..pos + prefix.len() + 1 + end, &inner);
-                } else {
-                    break;
-                }
-            }
+        for cmd_name in ["mathbf", "mathrm", "mathit", "bm", "text"] {
+            text = Self::replace_macro_balanced(&text, cmd_name, |inner| inner.to_string());
         }
 
         // Step 3: Format superscripts and subscripts
@@ -932,7 +944,7 @@ impl MathRenderer {
                             );
                         }
                         MathSegment::Matrix { env, rows } => {
-                            let grid_id = egui::Id::new(format!("egui_mat_grid_{seg_idx}_{:p}", rows));
+                            let grid_id = ui.id().with(("egui_mat_grid", number.unwrap_or(0), seg_idx));
                             let mut grid_rect = None;
 
                             ui.horizontal(|ui| {
@@ -1037,5 +1049,18 @@ impl MathRenderer {
                 });
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_formula_to_html_nested_constructs_and_braces() {
+        let html = MathRenderer::formula_to_html("\\sqrt{\\frac{1}{2}} + x^{\\frac{a}{b}} + \\mathbf{a_{i}}");
+        assert!(!html.contains("&lt;span"), "Nested HTML tags must not be double-escaped: {html}");
+        assert!(html.contains("<span class=\"fraction\">"));
+        assert!(html.contains("<strong class=\"math-bold\">a<sub>i</sub></strong>"));
     }
 }

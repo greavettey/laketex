@@ -18,7 +18,7 @@ pub mod provisioner;
 pub mod worker;
 
 pub use diagnostic::{Diagnostic, DiagnosticSeverity};
-pub use engine::{CompileResult, CompilerEngine, EngineKind};
+pub use engine::{CompileOptions, CompileResult, CompilerEngine, EngineKind};
 pub use error_report::ErrorReport;
 pub use provisioner::Provisioner;
 pub use worker::CompilerWorker;

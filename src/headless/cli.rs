@@ -15,7 +15,7 @@ use std::path::PathBuf;
 #[command(
     name = "laketex",
     about = "Laketex: Lightweight, portable LaTeX editor and viewer in Rust",
-    version = "0.1.0"
+    version
 )]
 pub struct CliArgs {
     /// Optional headless CLI subcommand to execute instead of launching the desktop GUI.
@@ -46,6 +46,10 @@ pub enum Commands {
         /// Network port to listen on.
         #[arg(short, long, default_value_t = 3030)]
         port: u16,
+
+        /// Permit `-shell-escape` when requested by `/api/compile` callers
+        #[arg(long, default_value_t = false)]
+        allow_shell_escape: bool,
     },
 
     /// Compile a LaTeX file to PDF directly from the terminal
@@ -64,6 +68,10 @@ pub enum Commands {
         /// Automatically install missing external dependencies with consent before compiling
         #[arg(long)]
         install_deps: bool,
+
+        /// Permit external TeX engines to run with `-shell-escape` (e.g. for `minted`)
+        #[arg(long, default_value_t = false)]
+        allow_shell_escape: bool,
 
         /// Export a contextual error report file (.md or .json) if errors occur
         #[arg(long)]
@@ -168,15 +176,20 @@ impl CliArgs {
     /// Dispatches and executes the specified headless CLI subcommand, returning any execution errors.
     pub fn execute_subcommand(cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
         match cmd {
-            Commands::Serve { host, port } => {
+            Commands::Serve {
+                host,
+                port,
+                allow_shell_escape,
+            } => {
                 let server = HeadlessServer::new();
-                server.run_blocking(&host, port)?;
+                server.run_blocking_with_options(&host, port, allow_shell_escape)?;
             }
             Commands::Compile {
                 input,
                 output,
                 engine,
                 install_deps,
+                allow_shell_escape,
                 export_log,
             } => {
                 let source = std::fs::read_to_string(&input)?;
@@ -203,8 +216,14 @@ impl CliArgs {
                 };
 
                 println!("Compiling {} with {}...", input.display(), engine_kind.display_name());
-                let work_dir = input.parent().filter(|p| !p.as_os_str().is_empty());
-                let result = CompilerEngine::compile(&source, engine_kind, work_dir)?;
+                let work_dir = input.parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf());
+                let options = crate::compiler::CompileOptions {
+                    work_dir,
+                    doc_name: input.file_name().and_then(|s| s.to_str()).map(str::to_string),
+                    allow_shell_escape,
+                    shadow_subdocument: None,
+                };
+                let result = CompilerEngine::compile_with_options(&source, engine_kind, &options)?;
 
                 for diag in &result.diagnostics {
                     println!(

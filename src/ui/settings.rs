@@ -66,6 +66,10 @@ pub struct SettingsModal {
     pub active_tab: SettingsTab,
     /// Staged configuration changes being edited within the dialog.
     pub draft_config: AppConfig,
+    /// Language code that was active before opening the modal, restored if cancelled.
+    pub original_language: String,
+    /// Cached list of available `(code, display_name)` locales.
+    pub available_locales: Vec<(String, String)>,
     /// Target shortcut currently awaiting a keypress sequence from the user.
     pub capturing_target: Option<ShortcutTarget>,
     /// Temporary feedback or confirmation message displayed in the dialog footer.
@@ -81,10 +85,14 @@ impl Default for SettingsModal {
 impl SettingsModal {
     /// Constructs a new, closed [`SettingsModal`] initialized with default configuration values.
     pub fn new() -> Self {
+        let draft = AppConfig::default();
+        let original_language = draft.language.clone();
         Self {
             is_open: false,
             active_tab: SettingsTab::Appearance,
-            draft_config: AppConfig::default(),
+            draft_config: draft,
+            original_language,
+            available_locales: crate::i18n::available_locales(),
             capturing_target: None,
             status_message: None,
         }
@@ -93,6 +101,8 @@ impl SettingsModal {
     /// Opens the settings modal and initializes the working draft with the active configuration.
     pub fn open(&mut self, current_config: &AppConfig) {
         self.draft_config = current_config.clone();
+        self.original_language = current_config.language.clone();
+        self.available_locales = crate::i18n::available_locales();
         self.capturing_target = None;
         self.status_message = None;
         self.is_open = true;
@@ -257,6 +267,7 @@ impl SettingsModal {
                         .clicked()
                     {
                         self.draft_config = AppConfig::default();
+                        crate::i18n::set_locale(&self.draft_config.language);
                         self.capturing_target = None;
                         self.status_message =
                             Some("Reset all settings to default values".to_string());
@@ -308,6 +319,7 @@ impl SettingsModal {
                 }
             }
         } else if request_close {
+            crate::i18n::set_locale(&self.original_language);
             self.is_open = false;
             self.capturing_target = None;
         }
@@ -365,8 +377,8 @@ impl SettingsModal {
             "Interface Language",
             "Application display language (translations from locales/*.json)",
             |ui| {
-                let available_langs = crate::i18n::available_locales();
-                let current_display = available_langs
+                let current_display = self
+                    .available_locales
                     .iter()
                     .find(|(code, _)| code == &self.draft_config.language)
                     .map(|(_, name)| name.clone())
@@ -376,11 +388,11 @@ impl SettingsModal {
                     .selected_text(current_display)
                     .width(180.0)
                     .show_ui(ui, |ui| {
-                        for (code, name) in available_langs {
-                            let is_selected = self.draft_config.language == code;
-                            if ui.selectable_label(is_selected, &name).clicked() {
+                        for (code, name) in &self.available_locales {
+                            let is_selected = &self.draft_config.language == code;
+                            if ui.selectable_label(is_selected, name).clicked() {
                                 self.draft_config.language = code.clone();
-                                crate::i18n::set_locale(&code);
+                                crate::i18n::set_locale(code);
                             }
                         }
                     });
@@ -702,6 +714,28 @@ impl SettingsModal {
             "Trigger automatic background compilation on document edits",
             |ui| {
                 ui.checkbox(&mut self.draft_config.auto_compile, "");
+            },
+        );
+
+        ui.add_space(6.0);
+
+        setting_card(
+            ui,
+            "Allow Shell-Escape (-shell-escape)",
+            "Permit external TeX engines to execute external shell commands (e.g. Pygments for minted)",
+            |ui| {
+                ui.checkbox(&mut self.draft_config.allow_shell_escape, "");
+            },
+        );
+
+        ui.add_space(6.0);
+
+        setting_card(
+            ui,
+            "Auto-Save Subdocuments on Background Compile",
+            "Automatically write unsaved child files to disk during background master compilation",
+            |ui| {
+                ui.checkbox(&mut self.draft_config.auto_save_on_compile, "");
             },
         );
     }

@@ -50,9 +50,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return CliArgs::execute_subcommand(cmd);
     }
 
-    // Launch background headless REST API server for programmatic interaction
-    let api_port = args.api_port;
-    let _api_handle = HeadlessServer::start_background("127.0.0.1", api_port);
+    // Only launch background headless REST API server when explicitly requested via --with-api
+    let config = laketex::ui::config::AppConfig::load();
+    let api_port = if args.with_api {
+        Some(args.api_port)
+    } else {
+        None
+    };
+    let _api_handle = if let Some(port) = api_port {
+        Some(HeadlessServer::start_background_with_options(
+            "127.0.0.1",
+            port,
+            config.allow_shell_escape,
+        ))
+    } else {
+        None
+    };
 
     // Launch egui / eframe GUI application
     let app_icon = laketex::ui::logo::app_icon_data();
@@ -76,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )?;
 
-    if let Ok(handle) = _api_handle {
+    if let Some(Ok(handle)) = _api_handle {
         handle.store(false, Ordering::SeqCst);
     }
 

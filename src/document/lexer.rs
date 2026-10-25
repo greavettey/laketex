@@ -70,7 +70,7 @@ impl LatexLexer {
                 continue;
             }
 
-            // Check for command: starts with \ and followed by letters or a single non-letter
+            // Check for command: starts with \ and followed by letters or a single non-letter char
             if bytes[i] == b'\\' {
                 let start = i;
                 i += 1;
@@ -79,9 +79,9 @@ impl LatexLexer {
                         while i < len && bytes[i].is_ascii_alphabetic() {
                             i += 1;
                         }
-                    } else {
-                        // Single symbol command like \$, \&, \\, etc.
-                        i += 1;
+                    } else if let Some(ch) = input[i..].chars().next() {
+                        // Single symbol or UTF-8 character command like \$, \&, \\, \é, etc.
+                        i += ch.len_utf8();
                     }
                 }
                 tokens.push(Token {
@@ -252,5 +252,23 @@ impl LatexLexer {
         }
 
         job
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lexer_multibyte_utf8_commands() {
+        let src = "\\é \\α \\— $\\é + \\beta$ \\section{Résumé}";
+        let tokens = LatexLexer::tokenize(src);
+        assert!(!tokens.is_empty());
+        assert_eq!(tokens[0].token_type, TokenType::Command);
+        assert_eq!(tokens[0].text, "\\é");
+        assert_eq!(tokens[2].token_type, TokenType::Command);
+        assert_eq!(tokens[2].text, "\\α");
+        assert_eq!(tokens[4].token_type, TokenType::Command);
+        assert_eq!(tokens[4].text, "\\—");
     }
 }

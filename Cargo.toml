@@ -1,6 +1,6 @@
 [package]
 name = "laketex"
-version = "0.2.1"
+version = "0.2.3"
 edition = "2024" 
 authors = ["Axel Greavette"]
 description = "Lightweight, portable LaTeX viewer and editor in Rust with live compilation, auto-package import, and headless API"
@@ -36,6 +36,15 @@ tempfile = "3.17"
 ureq = { version = "2.12", features = ["json"] }
 printpdf = "0.12.8"
 flate2 = "1.0"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[package.metadata.bundle]
+name = "LakeTeX"
+identifier = "com.laketex.app"
+icon = ["assets/laketex.icns", "assets/laketex.ico", "assets/LaketexLogo.png"]
+short_description = "Lightweight, portable LaTeX viewer and editor in Rust"
 
 [profile.release]
 opt-level = "s"

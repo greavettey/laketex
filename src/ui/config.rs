@@ -41,6 +41,12 @@ pub struct AppConfig {
     /// Editor font size in points (default: 13.0)
     pub font_size: f32,
 
+    /// Whether external TeX engines are permitted to run with `-shell-escape` (default: `false`)
+    pub allow_shell_escape: bool,
+
+    /// Whether dirty subdocuments are automatically saved to disk during background auto-compile (default: `false`)
+    pub auto_save_on_compile: bool,
+
     /// User configurable keyboard shortcuts
     pub shortcuts: KeyBindingConfig,
 }
@@ -57,6 +63,8 @@ impl Default for AppConfig {
             fit_to_width: true,
             language: "en".to_string(),
             font_size: 13.0,
+            allow_shell_escape: false,
+            auto_save_on_compile: false,
             shortcuts: KeyBindingConfig::default(),
         }
     }

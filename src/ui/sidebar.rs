@@ -49,8 +49,8 @@ pub enum SidebarAction {
     None,
     /// Jump editor caret to line number
     JumpToLine(usize),
-    /// Auto-insert package declaration in document preamble
-    InsertPackage(String),
+    /// Auto-insert package declaration in document preamble, optionally prompting to install a missing dependency
+    InsertPackage(String, Option<PackageDependency>),
     /// Insert snippet string at current editor caret
     InsertSnippet(String),
     /// Prompt user consent to install missing external tool dependency
@@ -252,12 +252,8 @@ impl Sidebar {
                                         if is_imported {
                                             ui.colored_label(Color32::from_rgb(152, 195, 121), "✓ Added");
                                         } else if ui.button("+ Add").clicked() {
-                                            action = SidebarAction::InsertPackage(pkg_name.to_string());
-                                            if let Some(dep) = has_ext_dep {
-                                                if !dep.installed {
-                                                    action = SidebarAction::PromptInstallDependency(dep.clone());
-                                                }
-                                            }
+                                            let missing_dep = has_ext_dep.filter(|dep| !dep.installed).cloned();
+                                            action = SidebarAction::InsertPackage(pkg_name.to_string(), missing_dep);
                                         }
                                     });
                                 });

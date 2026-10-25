@@ -10,7 +10,7 @@
 //! - `POST /api/outline`: Extracts document section hierarchy
 //! - `POST /api/packages`: Detects imported packages
 
-use crate::compiler::engine::{CompilerEngine, EngineKind};
+use crate::compiler::engine::{CompileOptions, CompilerEngine, EngineKind};
 use crate::document::outline::OutlineParser;
 use crate::document::packages::PackageManager;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -29,6 +29,9 @@ pub struct CompileApiRequest {
     pub source: String,
     /// Compiler engine backend (native, tectonic, pdflatex, xelatex, lualatex)
     pub engine: Option<String>,
+    /// Optional opt-in request to allow `-shell-escape` (honored only if server allows shell-escape)
+    #[serde(default)]
+    pub allow_shell_escape: bool,
 }
 
 /// Response payload from `/api/compile`.
@@ -90,7 +93,17 @@ impl HeadlessServer {
     /// Spawns the HTTP REST API server on a dedicated background thread,
     /// returning an [`Arc<AtomicBool>`] handle that can be used to signal graceful shutdown.
     pub fn start_background(host: &str, port: u16) -> std::io::Result<Arc<AtomicBool>> {
+        Self::start_background_with_options(host, port, false)
+    }
+
+    /// Spawns the HTTP REST API server on a dedicated background thread with explicit shell-escape policy.
+    pub fn start_background_with_options(
+        host: &str,
+        port: u16,
+        server_allow_shell_escape: bool,
+    ) -> std::io::Result<Arc<AtomicBool>> {
         let address = format!("{host}:{port}");
+        let bind_host = host.to_string();
         let server = Server::http(&address).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::Other, format!("Server start error: {e}"))
         })?;
@@ -104,7 +117,7 @@ impl HeadlessServer {
             while running_clone.load(Ordering::SeqCst) {
                 if let Ok(Some(mut request)) = server.recv_timeout(std::time::Duration::from_millis(200)) {
                     // Security validation: block CSRF, cross-origin browser requests, and DNS rebinding attacks
-                    if let Err((status_code, err_msg)) = validate_request_security(&request) {
+                    if let Err((status_code, err_msg)) = validate_request_security(&request, &bind_host) {
                         let body = serde_json::json!({ "error": err_msg }).to_string();
                         let content_type = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
                         let response = Response::from_string(body)
@@ -123,7 +136,7 @@ impl HeadlessServer {
                             let json = serde_json::json!({
                                 "status": "online",
                                 "app": "Laketex",
-                                "version": "0.1.0",
+                                "version": env!("CARGO_PKG_VERSION"),
                                 "engines": engines,
                             });
                             (200, json.to_string())
@@ -141,8 +154,12 @@ impl HeadlessServer {
                                         Some("lualatex") => EngineKind::LuaLatex,
                                         _ => EngineKind::Native,
                                     };
+                                    let options = CompileOptions {
+                                        allow_shell_escape: server_allow_shell_escape && req.allow_shell_escape,
+                                        ..Default::default()
+                                    };
 
-                                    match CompilerEngine::compile(&req.source, engine, None) {
+                                    match CompilerEngine::compile_with_options(&req.source, engine, &options) {
                                         Ok(res) => {
                                             let pdf_b64 = res.pdf_bytes.as_ref().map(|b| BASE64.encode(b));
                                             let report_md = if !res.success || !res.diagnostics.is_empty() {
@@ -260,8 +277,12 @@ impl HeadlessServer {
                                         Some("tectonic") => EngineKind::Tectonic,
                                         _ => EngineKind::Native,
                                     };
+                                    let options = CompileOptions {
+                                        allow_shell_escape: server_allow_shell_escape && req.allow_shell_escape,
+                                        ..Default::default()
+                                    };
 
-                                    let compile_res = CompilerEngine::compile(&req.source, engine, None).ok();
+                                    let compile_res = CompilerEngine::compile_with_options(&req.source, engine, &options).ok();
                                     let pdf_bytes = compile_res.as_ref().and_then(|r| r.pdf_bytes.as_deref());
 
                                     let report = crate::engine::render_debugger::RenderDebugger::scan(
@@ -438,8 +459,18 @@ impl HeadlessServer {
 
     /// Runs the HTTP REST API server on the calling thread, blocking until interrupted (e.g. via `Ctrl+C`).
     pub fn run_blocking(&self, host: &str, port: u16) -> std::io::Result<()> {
+        self.run_blocking_with_options(host, port, false)
+    }
+
+    /// Runs the HTTP REST API server on the calling thread with explicit shell-escape policy.
+    pub fn run_blocking_with_options(
+        &self,
+        host: &str,
+        port: u16,
+        server_allow_shell_escape: bool,
+    ) -> std::io::Result<()> {
         let address = format!("{host}:{port}");
-        let _handle = Self::start_background(host, port)?;
+        let _handle = Self::start_background_with_options(host, port, server_allow_shell_escape)?;
         println!("[Laketex Headless Daemon] Running on http://{address}. Press Ctrl+C to stop.");
         loop {
             thread::sleep(std::time::Duration::from_secs(1));
@@ -447,57 +478,119 @@ impl HeadlessServer {
     }
 }
 
+fn extract_authority_host(input: &str) -> &str {
+    let s = input.trim();
+    let after_scheme = if let Some(idx) = s.find("://") {
+        &s[idx + 3..]
+    } else {
+        s
+    };
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    if authority.starts_with('[') {
+        if let Some(end_bracket) = authority.find(']') {
+            return &authority[..=end_bracket];
+        }
+        authority
+    } else {
+        authority.split(':').next().unwrap_or("")
+    }
+}
+
+fn is_allowed_host(host: &str, bind_host: &str) -> bool {
+    host.eq_ignore_ascii_case("127.0.0.1")
+        || host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("[::1]")
+        || host.eq_ignore_ascii_case("::1")
+        || (!bind_host.is_empty()
+            && bind_host != "0.0.0.0"
+            && host.eq_ignore_ascii_case(bind_host))
+}
+
 /// Validates incoming HTTP requests to protect against Cross-Origin (CORS/CSRF) attacks
 /// and DNS rebinding attacks from web browsers.
-///
-/// # Arguments
-/// * `request` - The incoming HTTP request to inspect.
-///
-/// # Returns
-/// * `Ok(())` if the request satisfies all security invariants.
-/// * `Err((status_code, error_message))` if the request violates security policy.
-///
-/// # Security Policy
-/// - Rejects cross-origin browser requests with external `Origin` headers (`403 Forbidden`).
-/// - Rejects requests containing external `Referer` headers (`403 Forbidden`).
-/// - Enforces that `Host` headers point exclusively to local loopback interfaces (`127.0.0.1`,
-///   `localhost`, `[::1]`) to mitigate DNS rebinding exploits.
-fn validate_request_security(request: &tiny_http::Request) -> std::result::Result<(), (u16, &'static str)> {
+fn validate_request_security(
+    request: &tiny_http::Request,
+    bind_host: &str,
+) -> std::result::Result<(), (u16, &'static str)> {
+    let mut has_json_content_type = false;
+
     for header in request.headers() {
         let field = header.field.as_str().as_str();
         let value = header.value.as_str();
 
         // 1. Origin header check: browsers send this on cross-origin requests
         if field.eq_ignore_ascii_case("origin") {
-            let val_lower = value.to_ascii_lowercase();
-            let is_local = val_lower.starts_with("http://127.0.0.1")
-                || val_lower.starts_with("http://localhost")
-                || val_lower.starts_with("http://[::1]");
-            if !is_local {
+            let host = extract_authority_host(value);
+            if !is_allowed_host(host, bind_host) {
                 return Err((403, "Forbidden: Cross-origin browser requests are blocked"));
             }
         }
 
-        // 2. Referer header check: if present, must originate from localhost
+        // 2. Referer header check: if present, must originate from allowed host
         if field.eq_ignore_ascii_case("referer") {
-            let val_lower = value.to_ascii_lowercase();
-            let is_local = val_lower.starts_with("http://127.0.0.1")
-                || val_lower.starts_with("http://localhost")
-                || val_lower.starts_with("http://[::1]");
-            if !is_local {
+            let host = extract_authority_host(value);
+            if !is_allowed_host(host, bind_host) {
                 return Err((403, "Forbidden: Untrusted referer header blocked"));
             }
         }
 
         // 3. Host header check: DNS rebinding protection
         if field.eq_ignore_ascii_case("host") {
-            let host_lower = value.to_ascii_lowercase();
-            let host_part = host_lower.split(':').next().unwrap_or("");
-            let is_valid_host = host_part == "127.0.0.1" || host_part == "localhost" || host_part == "[::1]";
-            if !is_valid_host {
+            let host = extract_authority_host(value);
+            if !is_allowed_host(host, bind_host) {
                 return Err((403, "Forbidden: Host header validation failed (DNS rebinding protection)"));
             }
         }
+
+        // 4. Content-Type check for CSRF protection on POST requests
+        if field.eq_ignore_ascii_case("content-type") {
+            let media_type = value.split(';').next().unwrap_or("").trim();
+            if media_type.eq_ignore_ascii_case("application/json") {
+                has_json_content_type = true;
+            }
+        }
     }
+
+    if request.method().as_str().eq_ignore_ascii_case("POST") && !has_json_content_type {
+        return Err((
+            415,
+            "Unsupported Media Type: POST requests require Content-Type: application/json",
+        ));
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_authority_host_and_allowed_host() {
+        assert_eq!(extract_authority_host("http://127.0.0.1:3030/api"), "127.0.0.1");
+        assert_eq!(extract_authority_host("http://localhost:3030"), "localhost");
+        assert_eq!(extract_authority_host("http://[::1]:3030/health"), "[::1]");
+        assert_eq!(extract_authority_host("[::1]:3030"), "[::1]");
+        assert_eq!(
+            extract_authority_host("http://localhost.evil.com:3030/attack"),
+            "localhost.evil.com"
+        );
+        assert_eq!(
+            extract_authority_host("http://127.0.0.1.attacker.com"),
+            "127.0.0.1.attacker.com"
+        );
+
+        assert!(is_allowed_host(extract_authority_host("http://127.0.0.1:3030"), "127.0.0.1"));
+        assert!(is_allowed_host(extract_authority_host("http://localhost:3030"), "127.0.0.1"));
+        assert!(is_allowed_host(extract_authority_host("http://[::1]:3030"), "127.0.0.1"));
+        assert!(!is_allowed_host(
+            extract_authority_host("http://localhost.evil.com:3030"),
+            "127.0.0.1"
+        ));
+        assert!(!is_allowed_host(
+            extract_authority_host("http://127.0.0.1.attacker.com:3030"),
+            "127.0.0.1"
+        ));
+    }
 }

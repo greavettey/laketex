@@ -73,6 +73,32 @@ pub struct EngineInfo {
     pub version: Option<String>,
 }
 
+/// Configuration options for a LaTeX compilation invocation.
+#[derive(Debug, Clone, Default)]
+pub struct CompileOptions {
+    /// Working directory for resolving images, `\input`, and relative assets
+    pub work_dir: Option<PathBuf>,
+    /// Optional document file name used to name the output PDF
+    pub doc_name: Option<String>,
+    /// Whether external TeX engines may execute with `-shell-escape` (default: `false`)
+    pub allow_shell_escape: bool,
+    /// Optional unsaved subdocument `(child_file_path, unsaved_content)` to stage via a shadow file
+    pub shadow_subdocument: Option<(PathBuf, String)>,
+}
+
+struct ShadowCleanupGuard(Option<PathBuf>);
+
+impl Drop for ShadowCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(ref p) = self.0 {
+            let _ = std::fs::remove_file(p);
+            for ext in ["aux", "log", "out"] {
+                let _ = std::fs::remove_file(p.with_extension(ext));
+            }
+        }
+    }
+}
+
 /// Result of a completed LaTeX compilation invocation.
 #[derive(Debug, Clone)]
 pub struct CompileResult {
@@ -240,7 +266,79 @@ impl CompilerEngine {
         work_dir: Option<&Path>,
         doc_name: Option<&str>,
     ) -> Result<CompileResult> {
+        let options = CompileOptions {
+            work_dir: work_dir.map(Path::to_path_buf),
+            doc_name: doc_name.map(str::to_string),
+            allow_shell_escape: false,
+            shadow_subdocument: None,
+        };
+        Self::compile_with_options(source, kind, &options)
+    }
+
+    /// Returns true if the document actually imports the `minted` package (ignoring commented lines).
+    pub fn uses_minted_package(source: &str) -> bool {
+        crate::document::packages::PackageManager::detect_packages(source)
+            .iter()
+            .any(|p| p.name == "minted")
+    }
+
+    /// Rewrites `\input{...}` and `\include{...}` references to `child_path` in `master_source`
+    /// so they point to `shadow_path` instead.
+    pub fn rewrite_subdocument_references(
+        master_source: &str,
+        run_dir: &Path,
+        child_path: &Path,
+        shadow_path: &Path,
+    ) -> String {
+        let rel_child = child_path.strip_prefix(run_dir).unwrap_or(child_path);
+        let rel_shadow = shadow_path.strip_prefix(run_dir).unwrap_or(shadow_path);
+
+        let rel_child_slash = rel_child.to_string_lossy().replace('\\', "/");
+        let rel_child_no_ext = rel_child
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let child_file_name = child_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let child_stem = child_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let rel_shadow_slash = rel_shadow.to_string_lossy().replace('\\', "/");
+        let rel_shadow_no_ext = rel_shadow
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let mut out = master_source.to_string();
+        for (target, replacement) in [
+            (&rel_child_slash, &rel_shadow_slash),
+            (&rel_child_no_ext, &rel_shadow_no_ext),
+            (&child_file_name, &rel_shadow_slash),
+            (&child_stem, &rel_shadow_no_ext),
+        ] {
+            if !target.is_empty() {
+                out = out.replace(&format!("\\input{{{target}}}"), &format!("\\input{{{replacement}}}"));
+                out = out.replace(&format!("\\include{{{target}}}"), &format!("\\include{{{replacement}}}"));
+            }
+        }
+        out
+    }
+
+    /// Compiles LaTeX source code to PDF using the specified engine backend and [`CompileOptions`].
+    pub fn compile_with_options(
+        source: &str,
+        kind: EngineKind,
+        options: &CompileOptions,
+    ) -> Result<CompileResult> {
         let start = Instant::now();
+        let work_dir = options.work_dir.as_deref();
+        let doc_name = options.doc_name.as_deref();
 
         let clean_stem = doc_name
             .map(Path::new)
@@ -359,11 +457,40 @@ impl CompilerEngine {
         let _ = std::fs::remove_file(&pdf_file_path);
         let _ = std::fs::remove_file(&tex_file_path);
 
-        // If pygmentize is not available and source uses minted, pre-inject draft mode
+        // Stage optional unsaved subdocument via a temporary shadow file (Approach A)
+        let mut shadow_mapping: Option<(String, String)> = None;
+        let mut _shadow_guard = ShadowCleanupGuard(None);
+        let source_with_shadow = if let Some((child_path, child_content)) = &options.shadow_subdocument {
+            let orig_name = child_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("subdoc.tex")
+                .to_string();
+            let orig_stem = child_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("subdoc");
+            let shadow_stem = format!(".laketex_shadow_{orig_stem}");
+            let shadow_path = child_path.with_file_name(format!("{shadow_stem}.tex"));
+            if std::fs::write(&shadow_path, child_content).is_ok() {
+                shadow_mapping = Some((shadow_stem, orig_name));
+                _shadow_guard = ShadowCleanupGuard(Some(shadow_path.clone()));
+                Self::rewrite_subdocument_references(source, &abs_run_dir, child_path, &shadow_path)
+            } else {
+                source.to_string()
+            }
+        } else {
+            source.to_string()
+        };
+        let source = source_with_shadow.as_str();
+
+        // If pygmentize is not available or shell-escape is disabled and source uses minted, pre-inject draft mode
         // to avoid unrecoverable XeTeX crashes when pygmentize cannot be executed
         let has_pygmentize = crate::document::packages::PackageManager::is_binary_available("pygmentize");
-        let pre_draft_minted = !has_pygmentize
-            && source.contains("minted")
+        let has_minted = Self::uses_minted_package(source);
+        let can_shell_escape = options.allow_shell_escape && has_pygmentize && has_minted;
+        let pre_draft_minted = has_minted
+            && !can_shell_escape
             && !source.contains("\\PassOptionsToPackage{draft}{minted}");
 
         // If pictures are referenced via \includegraphics that do not exist on disk,
@@ -403,14 +530,11 @@ impl CompilerEngine {
 
         let mut cmd = crate::create_hidden_command(&engine_path);
         cmd.current_dir(&abs_run_dir);
-        if let Ok(cur_path) = std::env::var("PATH") {
-            cmd.env("PATH", cur_path);
-        }
 
         match kind {
             EngineKind::Tectonic => {
                 cmd.arg("-Z").arg("continue-on-errors");
-                if has_pygmentize && source.contains("minted") {
+                if can_shell_escape {
                     cmd.arg("-Z").arg("shell-escape");
                     cmd.arg("-Z").arg(format!("shell-escape-cwd={}", abs_run_dir.display()));
                 }
@@ -419,7 +543,7 @@ impl CompilerEngine {
                     .arg(&tex_file_path);
             }
             EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
-                let shell_flag = if has_pygmentize && source.contains("minted") {
+                let shell_flag = if can_shell_escape {
                     "-shell-escape"
                 } else {
                     "-no-shell-escape"
@@ -448,7 +572,7 @@ impl CompilerEngine {
             && (combined_log.contains("failed to execute the shell-escape command")
                 || combined_log.contains("Package minted Error")
                 || combined_log.contains("You must invoke LaTeX with the -shell-escape flag"))
-            && source.contains("minted")
+            && has_minted
             && !source.contains("\\PassOptionsToPackage{draft}{minted}")
             && !pre_draft_minted;
 
@@ -485,9 +609,6 @@ impl CompilerEngine {
 
             let mut retry_cmd = crate::create_hidden_command(&engine_path);
             retry_cmd.current_dir(&abs_run_dir);
-            if let Ok(cur_path) = std::env::var("PATH") {
-                retry_cmd.env("PATH", cur_path);
-            }
             match kind {
                 EngineKind::Tectonic => {
                     retry_cmd
@@ -614,13 +735,10 @@ impl CompilerEngine {
         if needs_rerun {
             let mut pass2_cmd = crate::create_hidden_command(&engine_path);
             pass2_cmd.current_dir(run_dir);
-            if let Ok(cur_path) = std::env::var("PATH") {
-                pass2_cmd.env("PATH", cur_path);
-            }
             match kind {
                 EngineKind::Tectonic => {
                     pass2_cmd.arg("-Z").arg("continue-on-errors");
-                    if has_pygmentize && source.contains("minted") {
+                    if can_shell_escape {
                         pass2_cmd.arg("-Z").arg("shell-escape");
                         pass2_cmd.arg("-Z").arg(format!("shell-escape-cwd={}", abs_run_dir.display()));
                     }
@@ -630,7 +748,7 @@ impl CompilerEngine {
                         .arg(&tex_file_path);
                 }
                 EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
-                    let shell_flag = if has_pygmentize && source.contains("minted") {
+                    let shell_flag = if can_shell_escape {
                         "-shell-escape"
                     } else {
                         "-no-shell-escape"
@@ -652,6 +770,21 @@ impl CompilerEngine {
         }
 
         let mut diagnostics = DiagnosticParser::parse(&combined_log);
+        if let Some((ref shadow_stem, ref orig_name)) = shadow_mapping {
+            let shadow_file = format!("{shadow_stem}.tex");
+            for diag in &mut diagnostics {
+                if let Some(ref mut f) = diag.file {
+                    if f.contains(shadow_stem) {
+                        *f = orig_name.clone();
+                    }
+                }
+                if diag.message.contains(&shadow_file) {
+                    diag.message = diag.message.replace(&shadow_file, orig_name);
+                } else if diag.message.contains(shadow_stem) {
+                    diag.message = diag.message.replace(shadow_stem, orig_name);
+                }
+            }
+        }
 
         let raw_pdf = if pdf_file_path.exists() {
             std::fs::read(&pdf_file_path).ok()
@@ -734,9 +867,14 @@ impl CompilerEngine {
 
         if pre_draft_minted && success {
             diagnostics.retain(|d| d.severity != crate::compiler::diagnostic::DiagnosticSeverity::Error);
+            let draft_reason = if !options.allow_shell_escape {
+                "Package 'minted' compiled in draft mode: Shell-escape is disabled by default for security. Enable 'Allow Shell-Escape' in Settings -> Compiler (or pass --allow-shell-escape) to run Pygments in external TeX engines."
+            } else {
+                "Package 'minted' compiled in draft mode: Pygments ('pygmentize') was not found on PATH. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines."
+            };
             diagnostics.push(Diagnostic {
                 severity: crate::compiler::diagnostic::DiagnosticSeverity::Warning,
-                message: "Package 'minted' compiled in draft mode: Pygments ('pygmentize') was not found on PATH. Run 'pip install pygments' to enable full Pygments syntax coloring in external TeX engines.".to_string(),
+                message: draft_reason.to_string(),
                 line: None,
                 file: None,
                 details: Some("LaTeX compiled with '\\PassOptionsToPackage{draft}{minted}'".to_string()),
@@ -881,5 +1019,36 @@ impl CompilerEngine {
             }
         }
         missing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_uses_minted_package_ignores_comments() {
+        assert!(!CompilerEngine::uses_minted_package(
+            "% \\usepackage{minted}\n\\documentclass{article}\n\\begin{document}\nminted text\n\\end{document}"
+        ));
+        assert!(CompilerEngine::uses_minted_package(
+            "\\documentclass{article}\n\\usepackage{minted}\n\\begin{document}\n\\end{document}"
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_subdocument_references() {
+        let run_dir = Path::new("/project");
+        let child_path = Path::new("/project/chapters/intro.tex");
+        let shadow_path = Path::new("/project/chapters/.laketex_shadow_intro.tex");
+        let master = "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\include{chapters/intro.tex}\n\\end{document}";
+        let rewritten = CompilerEngine::rewrite_subdocument_references(
+            master,
+            run_dir,
+            child_path,
+            shadow_path,
+        );
+        assert!(rewritten.contains("\\input{chapters/.laketex_shadow_intro}"));
+        assert!(rewritten.contains("\\include{chapters/.laketex_shadow_intro.tex}"));
     }
 }

@@ -477,7 +477,7 @@ impl NativeLatexParser {
 
             if line.contains("\\begin{equation")
                 || line.starts_with("\\[")
-                || (line.starts_with("$$") && (!line[2..].contains("$$") || line.ends_with("$$")))
+                || line.starts_with("$$")
                 || line.starts_with("\\begin{pmatrix}")
                 || line.starts_with("\\begin{bmatrix}")
                 || line.starts_with("\\begin{Bmatrix}")
@@ -507,15 +507,14 @@ impl NativeLatexParser {
                 let mut label = None;
 
                 // Handle single-line display math e.g. \[ E = mc^2 \] or $$ E = mc^2 $$
-                if (line.starts_with("\\[") && line.ends_with("\\]") && line.len() >= 4)
-                    || (line.starts_with("$$") && line[2..].contains("$$") && line.len() >= 4)
-                {
-                    let inner = if line.starts_with("\\[") {
-                        &line[2..line.len() - 2]
-                    } else {
-                        &line[2..line.len() - 2]
-                    };
-                    formula = inner.trim().to_string();
+                if line.starts_with("\\[") && line[2..].contains("\\]") && line.len() >= 4 {
+                    if let Some(close_rel) = line[2..].find("\\]") {
+                        formula = line[2..2 + close_rel].trim().to_string();
+                    }
+                } else if line.starts_with("$$") && line[2..].contains("$$") && line.len() >= 4 {
+                    if let Some(close_rel) = line[2..].find("$$") {
+                        formula = line[2..2 + close_rel].trim().to_string();
+                    }
                 } else {
                     if line.starts_with("\\begin{") && !line.starts_with("\\begin{equation") {
                         formula.push_str(line);
@@ -1681,5 +1680,23 @@ impl NativeLatexParser {
                 | "path"
                 | "coordinate"
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parser_single_line_display_math_with_trailing_utf8() {
+        let src = "\\documentclass{article}\n\\begin{document}\n$$ E = mc^2 $$ trailing —∑\n\\end{document}";
+        let ast = NativeLatexParser::parse(src);
+        assert_eq!(ast.blocks.len(), 1);
+        match &ast.blocks[0] {
+            DocumentBlock::EquationBlock { formula, .. } => {
+                assert_eq!(formula, "E = mc^2");
+            }
+            other => panic!("Expected EquationBlock, got {other:?}"),
+        }
     }
 }

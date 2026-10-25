@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="LaketexLogo.png" alt="Laketex Logo" width=350>
+  <img src="assets/LaketexLogo.png" alt="Laketex Logo" width=350>
   <h1><em>L</em>aketex</h1>
 </div>
 

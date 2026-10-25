@@ -54,19 +54,23 @@ impl ViewerPanel {
     ) -> ViewerAction {
         let mut action = ViewerAction::None;
 
-        // Ctrl+Mouse Wheel zoom for preview canvas
-        let ctrl_zoom = ui.input(|i| {
-            if (i.modifiers.command || i.modifiers.ctrl) && i.raw_scroll_delta.y != 0.0 {
-                let dy = i.raw_scroll_delta.y;
-                if dy > 0.0 {
-                    Some(0.1)
+        // Ctrl+Mouse Wheel zoom for preview canvas (scoped to viewer panel hover)
+        let ctrl_zoom = if ui.ui_contains_pointer() {
+            ui.input(|i| {
+                if (i.modifiers.command || i.modifiers.ctrl) && i.raw_scroll_delta.y != 0.0 {
+                    let dy = i.raw_scroll_delta.y;
+                    if dy > 0.0 {
+                        Some(0.1)
+                    } else {
+                        Some(-0.1)
+                    }
                 } else {
-                    Some(-0.1)
+                    None
                 }
-            } else {
-                None
-            }
-        });
+            })
+        } else {
+            None
+        };
         if let Some(delta) = ctrl_zoom {
             canvas.zoom = (canvas.zoom + delta).clamp(0.25, 4.0);
             canvas.fit_to_width = false;
@@ -116,6 +120,9 @@ impl ViewerPanel {
                         ViewMode::PdfRaster => canvas.total_pages.max(1),
                         ViewMode::NativeVector => typeset_pages.len().max(1),
                     };
+                    if canvas.current_page >= total {
+                        canvas.current_page = total.saturating_sub(1);
+                    }
 
                     if ui.button("Next ▶").clicked() && canvas.current_page + 1 < total {
                         canvas.current_page += 1;

@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use crate::compiler::engine::{CompileResult, CompilerEngine, EngineKind};
+use crate::compiler::engine::{CompileOptions, CompileResult, CompilerEngine, EngineKind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -26,6 +26,10 @@ pub struct CompileTask {
     pub work_dir: Option<PathBuf>,
     /// Optional document file name used to name the output PDF
     pub doc_name: Option<String>,
+    /// Whether external TeX engines may execute with `-shell-escape`
+    pub allow_shell_escape: bool,
+    /// Optional dirty subdocument `(child_path, unsaved_content)` to stage via a shadow file
+    pub shadow_subdocument: Option<(PathBuf, String)>,
     /// Creation instant used for debouncing
     pub timestamp: Instant,
 }
@@ -73,11 +77,16 @@ impl CompilerWorker {
                         let current_task = pending_task.take().unwrap();
                         is_busy_worker.store(true, Ordering::SeqCst);
 
-                        let result = CompilerEngine::compile_named(
+                        let options = CompileOptions {
+                            work_dir: current_task.work_dir,
+                            doc_name: current_task.doc_name,
+                            allow_shell_escape: current_task.allow_shell_escape,
+                            shadow_subdocument: current_task.shadow_subdocument,
+                        };
+                        let result = CompilerEngine::compile_with_options(
                             &current_task.source,
                             current_task.engine,
-                            current_task.work_dir.as_deref(),
-                            current_task.doc_name.as_deref(),
+                            &options,
                         )
                         .map_err(|e| e.to_string());
 
@@ -135,13 +144,34 @@ impl CompilerWorker {
         work_dir: Option<PathBuf>,
         doc_name: Option<String>,
     ) -> u64 {
+        self.submit_with_options(
+            source,
+            engine,
+            CompileOptions {
+                work_dir,
+                doc_name,
+                allow_shell_escape: false,
+                shadow_subdocument: None,
+            },
+        )
+    }
+
+    /// Submits LaTeX code with full [`CompileOptions`] (debounced). Returns the assigned task ID.
+    pub fn submit_with_options(
+        &self,
+        source: String,
+        engine: EngineKind,
+        options: CompileOptions,
+    ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let task = CompileTask {
             id,
             source,
             engine,
-            work_dir,
-            doc_name,
+            work_dir: options.work_dir,
+            doc_name: options.doc_name,
+            allow_shell_escape: options.allow_shell_escape,
+            shadow_subdocument: options.shadow_subdocument,
             timestamp: Instant::now(),
         };
         let _ = self.task_sender.send(task);

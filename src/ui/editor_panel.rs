@@ -589,18 +589,22 @@ impl EditorPanel {
             ui.separator();
         }
 
-        // Ctrl+Mouse Wheel zoom for editor font size
-        let ctrl_font_zoom = ui.input(|i| {
-            if (i.modifiers.command || i.modifiers.ctrl) && i.raw_scroll_delta.y != 0.0 {
-                if i.raw_scroll_delta.y > 0.0 {
-                    Some(0.5)
+        // Ctrl+Mouse Wheel zoom for editor font size (scoped to editor panel hover)
+        let ctrl_font_zoom = if ui.ui_contains_pointer() {
+            ui.input(|i| {
+                if (i.modifiers.command || i.modifiers.ctrl) && i.raw_scroll_delta.y != 0.0 {
+                    if i.raw_scroll_delta.y > 0.0 {
+                        Some(0.5)
+                    } else {
+                        Some(-0.5)
+                    }
                 } else {
-                    Some(-0.5)
+                    None
                 }
-            } else {
-                None
-            }
-        });
+            })
+        } else {
+            None
+        };
         if let Some(delta) = ctrl_font_zoom {
             self.font_size = (self.font_size + delta).clamp(10.0, 24.0);
         }

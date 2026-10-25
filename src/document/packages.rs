@@ -18,10 +18,16 @@
 
 use crate::error::{LakeTexError, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 
 static CACHED_PYTHON_ENV: RwLock<Option<PythonEnvironment>> = RwLock::new(None);
+static EXTRA_PATH_DIRS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+static CACHED_BIN_PATHS: LazyLock<RwLock<HashMap<String, Option<PathBuf>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+static CACHED_KNOWN_DEPS: LazyLock<RwLock<Option<Vec<PackageDependency>>>> =
+    LazyLock::new(|| RwLock::new(None));
 
 /// Static specification of a known LaTeX package external tool dependency.
 pub struct DependencySpec {
@@ -292,10 +298,16 @@ impl PackageManager {
         format!("\\usepackage{{{pkg_name}}}\n{source}")
     }
 
-    /// Invalidates the cached Python environment probe, forcing a refresh on next access.
+    /// Invalidates the cached Python environment and binary discovery caches, forcing a refresh on next access.
     pub fn invalidate_python_environment() {
         if let Ok(mut lock) = CACHED_PYTHON_ENV.write() {
             *lock = None;
+        }
+        if let Ok(mut bin_lock) = CACHED_BIN_PATHS.write() {
+            bin_lock.clear();
+        }
+        if let Ok(mut deps_lock) = CACHED_KNOWN_DEPS.write() {
+            *deps_lock = None;
         }
     }
 
@@ -761,13 +773,42 @@ impl PackageManager {
     }
 
     /// Checks if an executable exists on PATH, Conda environments, virtual environments,
-    /// or Python scripts directories.
+    /// or Python scripts directories. Results are cached in-memory to avoid repeated filesystem walks.
     pub fn find_binary_path(binary: &str) -> Option<PathBuf> {
+        if let Ok(read) = CACHED_BIN_PATHS.read() {
+            if let Some(cached) = read.get(binary) {
+                if cached.as_ref().map_or(true, |p| p.is_file()) {
+                    return cached.clone();
+                }
+            }
+        }
+        let resolved = Self::find_binary_path_uncached(binary);
+        if let Ok(mut write) = CACHED_BIN_PATHS.write() {
+            write.insert(binary.to_string(), resolved.clone());
+        }
+        resolved
+    }
+
+    fn find_binary_path_uncached(binary: &str) -> Option<PathBuf> {
         let exe_name = if cfg!(windows) {
             format!("{binary}.exe")
         } else {
             binary.to_string()
         };
+
+        // 0. Check extra discovered tool directories
+        if let Ok(extra_dirs) = EXTRA_PATH_DIRS.read() {
+            for dir in extra_dirs.iter() {
+                let candidate = dir.join(&exe_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                let raw_candidate = dir.join(binary);
+                if raw_candidate.is_file() {
+                    return Some(raw_candidate);
+                }
+            }
+        }
 
         // 1. Check system PATH
         if let Ok(path_var) = std::env::var("PATH") {
@@ -947,19 +988,24 @@ impl PackageManager {
         None
     }
 
-    /// Adds a directory to the current process's PATH environment variable if not already present.
+    /// Registers a directory in the thread-safe extra PATH list for child processes without mutating global `environ`.
     pub fn add_to_process_path(dir: &std::path::Path) {
-        if let Ok(cur_path) = std::env::var("PATH") {
-            let dir_str = dir.to_string_lossy();
-            if !cur_path.to_lowercase().contains(&dir_str.to_lowercase()) {
-                let sep = if cfg!(windows) { ";" } else { ":" };
-                let new_path = format!("{dir_str}{sep}{cur_path}");
-                // SAFETY: Updating process PATH for external tool discovery.
-                unsafe {
-                    std::env::set_var("PATH", new_path);
-                }
+        if let Ok(mut dirs) = EXTRA_PATH_DIRS.write() {
+            if !dirs.iter().any(|d| d == dir) {
+                dirs.push(dir.to_path_buf());
             }
         }
+    }
+
+    /// Returns an augmented `PATH` environment variable value combining any discovered
+    /// Python/Conda/local tool directories with the system `PATH`.
+    pub fn augmented_path_env() -> Option<std::ffi::OsString> {
+        let extra = EXTRA_PATH_DIRS.read().ok()?.clone();
+        let mut all_paths: Vec<PathBuf> = extra;
+        if let Some(existing) = std::env::var_os("PATH") {
+            all_paths.extend(std::env::split_paths(&existing));
+        }
+        std::env::join_paths(all_paths).ok()
     }
 
     /// Returns true if a binary is available on PATH or in python scripts.
@@ -969,11 +1015,17 @@ impl PackageManager {
 
     /// Returns catalog of known external tool dependencies for LaTeX packages.
     pub fn get_known_dependencies() -> Vec<PackageDependency> {
-        KNOWN_DEPENDENCY_SPECS
+        if let Ok(read) = CACHED_KNOWN_DEPS.read() {
+            if let Some(cached) = read.as_ref() {
+                return cached.clone();
+            }
+        }
+
+        let deps: Vec<PackageDependency> = KNOWN_DEPENDENCY_SPECS
             .iter()
             .map(|spec| {
                 let bin_path = Self::find_binary_path(spec.binary_name);
-                let installed = bin_path.is_some() || Self::is_binary_available(spec.binary_name);
+                let installed = bin_path.is_some();
                 PackageDependency {
                     latex_package: spec.latex_package.to_string(),
                     name: spec.name.to_string(),
@@ -986,7 +1038,12 @@ impl PackageManager {
                     binary_path: bin_path.map(|p| p.to_string_lossy().to_string()),
                 }
             })
-            .collect()
+            .collect();
+
+        if let Ok(mut write) = CACHED_KNOWN_DEPS.write() {
+            *write = Some(deps.clone());
+        }
+        deps
     }
 
     /// Detects external dependencies required by packages declared in the document source.

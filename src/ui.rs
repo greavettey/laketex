@@ -22,7 +22,7 @@ pub mod toolbar;
 pub mod viewer_panel;
 
 use crate::compiler::engine::EngineKind;
-use crate::compiler::{CompilerWorker, Diagnostic};
+use crate::compiler::{CompileOptions, CompilerWorker, Diagnostic};
 use crate::document::packages::{PackageDependency, PackageManager};
 use crate::document::{BuiltinDoc, BuiltinDocKind, Document};
 use crate::engine::layout::{DocumentLayout, TypesetPage};
@@ -132,8 +132,8 @@ pub struct LakeTexApp {
     /// Monotonically increasing task identifier of the latest submitted compile job.
     pub current_compile_task_id: u64,
 
-    /// Port of the accompanying background headless REST API server.
-    pub api_port: u16,
+    /// Port of the accompanying background headless REST API server (if enabled).
+    pub api_port: Option<u16>,
     /// Status bar notification message.
     pub status_message: String,
     /// State machine for user-consented external tool installs (e.g., Pygments).
@@ -145,6 +145,10 @@ pub struct LakeTexApp {
     pub settings_modal: SettingsModal,
     /// Pending action awaiting user confirmation of unsaved document changes.
     pub pending_close_action: Option<PendingCloseAction>,
+    /// Name of the theme last applied to the egui context to avoid redundant per-frame style clones.
+    last_applied_theme: String,
+    /// Debounce deadline for persisting `Ctrl+Scroll` editor font size adjustments to disk.
+    font_size_save_deadline: Option<std::time::Instant>,
 }
 
 /// Target action deferred while confirming unsaved document modifications.
@@ -168,7 +172,7 @@ impl LakeTexApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         initial_file: Option<PathBuf>,
-        api_port: u16,
+        api_port: Option<u16>,
     ) -> Self {
         // Configure math and symbol fallback fonts
         ThemeConfig::configure_fonts(&cc.egui_ctx);
@@ -202,11 +206,15 @@ impl LakeTexApp {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         // Submit initial compilation in background worker thread
-        let current_compile_task_id = compiler.submit_named(
+        let current_compile_task_id = compiler.submit_with_options(
             document.content.clone(),
             engine,
-            Some(initial_working_dir.clone()),
-            Some(document.file_name()),
+            CompileOptions {
+                work_dir: Some(initial_working_dir.clone()),
+                doc_name: Some(document.file_name()),
+                allow_shell_escape: config.allow_shell_escape,
+                shadow_subdocument: None,
+            },
         );
 
         let project_manager = ProjectManager::new(Some(initial_working_dir));
@@ -257,6 +265,8 @@ impl LakeTexApp {
             config,
             settings_modal: SettingsModal::new(),
             pending_close_action: None,
+            last_applied_theme: String::new(),
+            font_size_save_deadline: None,
         }
     }
 
@@ -273,28 +283,50 @@ impl LakeTexApp {
         self.typeset_pages = DocumentLayout::layout_document(&ast);
     }
 
-    /// Triggers compilation using the active engine backend (synchronous for Native, background worker for external engines).
+    /// Triggers compilation using the active engine backend (debounced on worker thread for auto-compile).
     pub fn trigger_compilation(&mut self) {
-        self.recompute_native_layout();
+        self.trigger_compilation_with_mode(false);
+    }
 
+    /// Triggers compilation with explicit manual vs. background auto-compile mode.
+    ///
+    /// When editing a subdocument compiled via a configured Master Document:
+    /// - Manual compiles (or when `config.auto_save_on_compile` is enabled) flush dirty child files to disk.
+    /// - Background auto-compiles stage unsaved child edits into a hidden shadow file so the real file on disk is untouched.
+    pub fn trigger_compilation_with_mode(&mut self, is_manual: bool) {
         // Check if a Master Document is configured for multi-file projects (only applies when editing sub-files without \documentclass)
         let is_subdocument = !self.document.content.contains("\\documentclass");
         if is_subdocument {
             if let Some(master_path) = self.project_manager.master_document.clone() {
                 if let Some(current_path) = self.document.path.clone() {
                     if current_path != master_path {
-                        // Auto-flush current dirty child file to disk so master document compiles latest edits
-                        if self.document.is_dirty {
+                        let shadow_subdocument = if (is_manual || self.config.auto_save_on_compile)
+                            && self.document.is_dirty
+                        {
                             let _ = self.document.save_to_file(&current_path);
-                        }
+                            self.document.is_dirty = false;
+                            None
+                        } else if self.document.is_dirty {
+                            Some((current_path.clone(), self.document.content.clone()))
+                        } else {
+                            None
+                        };
+
                         if let Ok(master_source) = std::fs::read_to_string(&master_path) {
                             let master_dir = master_path.parent().map(|p| p.to_path_buf());
-                            let master_name = master_path.file_name().and_then(|s| s.to_str()).unwrap_or("main.tex");
-                            let id = self.compiler.submit_named(
+                            let master_name = master_path
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("main.tex");
+                            let id = self.compiler.submit_with_options(
                                 master_source.clone(),
                                 self.engine,
-                                master_dir,
-                                Some(master_name.to_string()),
+                                CompileOptions {
+                                    work_dir: master_dir,
+                                    doc_name: Some(master_name.to_string()),
+                                    allow_shell_escape: self.config.allow_shell_escape,
+                                    shadow_subdocument,
+                                },
                             );
                             self.current_compile_task_id = id;
                             let ast = NativeLatexParser::parse(&master_source);
@@ -307,10 +339,12 @@ impl LakeTexApp {
             }
         }
 
-        if self.engine == EngineKind::Native {
-            // Instant in-process compilation (< 5 ms)
+        let ast = NativeLatexParser::parse(&self.document.content);
+        self.typeset_pages = DocumentLayout::layout_document(&ast);
+
+        if self.engine == EngineKind::Native && is_manual {
+            // Instant in-process compilation for manual Native builds
             let start = std::time::Instant::now();
-            let ast = NativeLatexParser::parse(&self.document.content);
             match crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast) {
                 Ok(bytes) => {
                     let ms = start.elapsed().as_millis();
@@ -331,11 +365,15 @@ impl LakeTexApp {
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                 .or_else(|| Some(self.project_manager.root_dir.clone()));
             let doc_name = Some(self.document.file_name());
-            let id = self.compiler.submit_named(
+            let id = self.compiler.submit_with_options(
                 self.document.content.clone(),
                 self.engine,
-                work_dir,
-                doc_name,
+                CompileOptions {
+                    work_dir,
+                    doc_name,
+                    allow_shell_escape: self.config.allow_shell_escape,
+                    shadow_subdocument: None,
+                },
             );
             self.current_compile_task_id = id;
             self.status_message = "Compiling...".to_string();
@@ -351,7 +389,7 @@ impl LakeTexApp {
 
         if self.config.shortcuts.matches_compile(ctx) {
             self.canvas.invalidate();
-            self.trigger_compilation();
+            self.trigger_compilation_with_mode(true);
         }
         if self.config.shortcuts.matches_save(ctx) {
             self.save_document();
@@ -473,9 +511,10 @@ impl LakeTexApp {
             .insert_snippet_at_caret(ctx, &mut self.document.content, snippet);
         self.document.is_dirty = true;
         self.document.refresh_caches();
-        self.recompute_native_layout();
         if self.auto_compile {
             self.trigger_compilation();
+        } else {
+            self.recompute_native_layout();
         }
     }
 
@@ -977,8 +1016,11 @@ impl eframe::App for LakeTexApp {
             self.pending_close_action = Some(PendingCloseAction::ExitApp);
         }
 
-        // Apply active theme
-        self.current_theme.apply(ctx);
+        // Apply active theme only when changed
+        if self.last_applied_theme != self.current_theme.name {
+            self.current_theme.apply(ctx);
+            self.last_applied_theme = self.current_theme.name.clone();
+        }
 
         // Check for completed background compilation results
         if let Some(output) = self.compiler.try_receive() {
@@ -1098,7 +1140,7 @@ impl eframe::App for LakeTexApp {
 
             if action.compile_requested {
                 self.canvas.invalidate();
-                self.trigger_compilation();
+                self.trigger_compilation_with_mode(true);
             }
             if action.new_requested {
                 self.new_document();
@@ -1155,9 +1197,13 @@ impl eframe::App for LakeTexApp {
                 ui.label(format!("Chars: {}", self.document.char_count()));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let api_label = match self.api_port {
+                        Some(port) => format!("REST API: :{port}"),
+                        None => "REST API: Off".to_string(),
+                    };
                     ui.colored_label(
                         Color32::from_rgb(97, 175, 239),
-                        format!("REST API: :{}", self.api_port),
+                        api_label,
                     );
                     ui.separator();
                     ui.label(format!("Zoom: {:.0}%", self.canvas.zoom * 100.0));
@@ -1232,14 +1278,18 @@ impl eframe::App for LakeTexApp {
                         SidebarAction::JumpToLine(line) => {
                             self.editor_panel.jump_to_line(line);
                         }
-                        SidebarAction::InsertPackage(pkg) => {
+                        SidebarAction::InsertPackage(pkg, missing_dep) => {
                             self.document.content =
                                 PackageManager::insert_package(&self.document.content, &pkg);
                             self.document.is_dirty = true;
                             self.document.refresh_caches();
-                            self.recompute_native_layout();
                             if self.auto_compile {
                                 self.trigger_compilation();
+                            } else {
+                                self.recompute_native_layout();
+                            }
+                            if let Some(dep) = missing_dep {
+                                self.prompt_dependency_consent(dep);
                             }
                         }
                         SidebarAction::InsertSnippet(snippet) => {
@@ -1269,25 +1319,69 @@ impl eframe::App for LakeTexApp {
                     vec2(editor_width, ui.available_height()),
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
+                        let active_doc_name = self.document.file_name();
+                        let active_doc_stem = Path::new(&active_doc_name)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(&active_doc_name);
+                        let is_compiled_via_master = !self.document.content.contains("\\documentclass")
+                            && self.project_manager.master_document.as_ref().is_some_and(|m| {
+                                self.document.path.as_ref().is_some_and(|c| c != m)
+                            });
+                        let editor_diagnostics: std::borrow::Cow<'_, [Diagnostic]> =
+                            if is_compiled_via_master {
+                                std::borrow::Cow::Owned(
+                                    self.diagnostics
+                                        .iter()
+                                        .filter(|d| {
+                                            d.file.as_deref().is_some_and(|f| {
+                                                let f_name = Path::new(f)
+                                                    .file_name()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or(f);
+                                                let f_stem = Path::new(f_name)
+                                                    .file_stem()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or(f_name);
+                                                f_name == active_doc_name || f_stem == active_doc_stem
+                                            })
+                                        })
+                                        .cloned()
+                                        .collect(),
+                                )
+                            } else {
+                                std::borrow::Cow::Borrowed(&self.diagnostics)
+                            };
+
                         let text_changed = self.editor_panel.show(
                             ui,
                             &mut self.document.content,
-                            &self.diagnostics,
+                            &editor_diagnostics,
                             self.current_theme.dark_mode,
                         );
 
                         if text_changed {
                             self.document.is_dirty = true;
                             self.document.refresh_caches();
-                            self.recompute_native_layout();
                             if self.auto_compile {
                                 self.trigger_compilation();
+                            } else {
+                                self.recompute_native_layout();
                             }
                         }
 
                         if (self.editor_panel.font_size - self.config.font_size).abs() > 0.01 {
                             self.config.font_size = self.editor_panel.font_size;
-                            let _ = self.config.save();
+                            self.font_size_save_deadline =
+                                Some(std::time::Instant::now() + Duration::from_millis(500));
+                        }
+                        if let Some(deadline) = self.font_size_save_deadline {
+                            if std::time::Instant::now() >= deadline {
+                                let _ = self.config.save();
+                                self.font_size_save_deadline = None;
+                            } else {
+                                ctx.request_repaint_after(Duration::from_millis(100));
+                            }
                         }
                     },
                 );

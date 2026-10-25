@@ -11,8 +11,14 @@
 //!    LaTeX, and Shell with Pygments-compatible token classes (`.k`, `.nf`, `.s`, `.c`, `.m`, etc.).
 
 use egui::Color32;
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
+
+static PYGMENTIZE_CACHE: LazyLock<Mutex<HashMap<(u64, String), Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Syntax token classification matching Pygments standards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,31 +129,54 @@ impl SyntaxHighlighter {
             return None;
         }
 
+        let mut hasher = DefaultHasher::new();
+        code.hash(&mut hasher);
+        let cache_key = (hasher.finish(), lang.to_string());
+        if let Ok(cache) = PYGMENTIZE_CACHE.lock() {
+            if let Some(cached) = cache.get(&cache_key) {
+                return cached.clone();
+            }
+        }
+
         let pygmentize_cmd = crate::document::packages::PackageManager::find_binary_path("pygmentize")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "pygmentize".to_string());
         let mut cmd = crate::create_hidden_command(&pygmentize_cmd);
-        if let Ok(cur_path) = std::env::var("PATH") {
-            cmd.env("PATH", cur_path);
-        }
         cmd.args(["-l", lang, "-f", "html", "-O", "nowrap=True"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
         let mut child = cmd.spawn().ok()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(code.as_bytes());
-        }
+        let stdin = child.stdin.take();
+        let output = std::thread::scope(|s| {
+            if let Some(mut stdin_pipe) = stdin {
+                let bytes = code.as_bytes();
+                s.spawn(move || {
+                    let _ = stdin_pipe.write_all(bytes);
+                });
+            }
+            child.wait_with_output().ok()
+        })?;
 
-        let output = child.wait_with_output().ok()?;
-        if output.status.success() {
+        let result = if output.status.success() {
             let res = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
             if !res.is_empty() {
-                return Some(res);
+                Some(res)
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        if let Ok(mut cache) = PYGMENTIZE_CACHE.lock() {
+            if cache.len() > 256 {
+                cache.clear();
+            }
+            cache.insert(cache_key, result.clone());
         }
-        None
+        result
     }
 
     /// Pure-Rust fallback syntax tokenizer emitting Pygments-compatible HTML tags.

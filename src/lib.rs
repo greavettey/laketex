@@ -57,17 +57,17 @@ pub use error::{LakeTexError, Result};
 pub use i18n::{current_locale, set_locale, tr, tr_args};
 
 /// Creates a standard `std::process::Command` configured with `CREATE_NO_WINDOW` on Windows
-/// to prevent console window popups when invoking external subprocesses.
+/// to prevent console window popups when invoking external subprocesses, and populates `PATH`
+/// with any discovered Python/Conda/local tool directories.
 pub fn create_hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let mut cmd = std::process::Command::new(program);
         cmd.creation_flags(0x08000000);
-        cmd
     }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new(program)
+    if let Some(aug_path) = crate::document::packages::PackageManager::augmented_path_env() {
+        cmd.env("PATH", aug_path);
     }
+    cmd
 }

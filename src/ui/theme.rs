@@ -570,6 +570,9 @@ impl ThemeConfig {
 /// Supports `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA` formats, with or without leading `#`.
 pub fn parse_hex_color(hex: &str) -> Option<Color32> {
     let clean = hex.trim().trim_start_matches('#');
+    if !clean.is_ascii() {
+        return None;
+    }
     match clean.len() {
         3 => {
             let r = u8::from_str_radix(&clean[0..1], 16).ok()? * 17;
@@ -582,7 +585,7 @@ pub fn parse_hex_color(hex: &str) -> Option<Color32> {
             let g = u8::from_str_radix(&clean[1..2], 16).ok()? * 17;
             let b = u8::from_str_radix(&clean[2..3], 16).ok()? * 17;
             let a = u8::from_str_radix(&clean[3..4], 16).ok()? * 17;
-            Some(Color32::from_rgba_premultiplied(r, g, b, a))
+            Some(Color32::from_rgba_unmultiplied(r, g, b, a))
         }
         6 => {
             let r = u8::from_str_radix(&clean[0..2], 16).ok()?;
@@ -595,7 +598,7 @@ pub fn parse_hex_color(hex: &str) -> Option<Color32> {
             let g = u8::from_str_radix(&clean[2..4], 16).ok()?;
             let b = u8::from_str_radix(&clean[4..6], 16).ok()?;
             let a = u8::from_str_radix(&clean[6..8], 16).ok()?;
-            Some(Color32::from_rgba_premultiplied(r, g, b, a))
+            Some(Color32::from_rgba_unmultiplied(r, g, b, a))
         }
         _ => None,
     }
@@ -624,6 +627,11 @@ mod tests {
             Some(Color32::from_rgb(0, 0, 0))
         );
         assert_eq!(parse_hex_color("invalid"), None);
+        assert_eq!(parse_hex_color("#ééé"), None);
+        assert_eq!(
+            parse_hex_color("#FF000080"),
+            Some(Color32::from_rgba_unmultiplied(255, 0, 0, 128))
+        );
     }
 
     #[test]

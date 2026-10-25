@@ -233,7 +233,7 @@ impl NativePageRenderer {
                                     ui.add_space(3.0 * zoom);
                                     ui.separator();
                                 }
-                                egui::Grid::new(format!("table_grid_{:p}", element))
+                                egui::Grid::new(("table_grid", element.source_line, (element.y_offset * 10.0) as i32))
                                     .striped(!*has_booktabs)
                                     .spacing(vec2(16.0 * zoom, 6.0 * zoom))
                                     .show(ui, |ui| {

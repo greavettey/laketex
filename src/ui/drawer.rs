@@ -9,8 +9,9 @@
 use crate::compiler::error_report::ErrorReport;
 use crate::compiler::{Diagnostic, DiagnosticSeverity, EngineKind};
 use crate::document::packages::{PackageDependency, PackageManager};
-use crate::engine::render_debugger::RenderDebugger;
+use crate::engine::render_debugger::{RenderDebugReport, RenderDebugger};
 use egui::{Color32, RichText, ScrollArea, Ui};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Active view tab in the console drawer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,10 @@ pub struct Drawer {
     pub current_tab: DrawerTab,
     /// Ephemeral notification banner message and display timestamp
     pub status_feedback: Option<(String, std::time::Instant)>,
+    /// Cached key `(source_hash, doc_name, pdf_len)` for the render audit report
+    cached_audit_key: Option<(u64, String, usize)>,
+    /// Cached render audit report to avoid re-scanning on every frame
+    cached_audit_report: Option<RenderDebugReport>,
 }
 
 impl Default for Drawer {
@@ -38,6 +43,8 @@ impl Default for Drawer {
         Self {
             current_tab: DrawerTab::Diagnostics,
             status_feedback: None,
+            cached_audit_key: None,
+            cached_audit_report: None,
         }
     }
 }
@@ -73,7 +80,7 @@ impl Drawer {
         diagnostics: &[Diagnostic],
         raw_stdout: &str,
         raw_stderr: &str,
-        api_port: u16,
+        api_port: Option<u16>,
         pdf_bytes: Option<&[u8]>,
     ) -> DrawerAction {
         let mut action = DrawerAction::None;
@@ -87,8 +94,23 @@ impl Drawer {
             .filter(|d| d.severity == DiagnosticSeverity::Warning)
             .count();
 
-        // Perform fast render audit scan
-        let audit_report = RenderDebugger::scan(document_source, document_name, pdf_bytes);
+        // Perform cached render audit scan only when document source or PDF output changes
+        let mut hasher = DefaultHasher::new();
+        document_source.hash(&mut hasher);
+        let audit_key = (
+            hasher.finish(),
+            document_name.to_string(),
+            pdf_bytes.map_or(0, |b| b.len()),
+        );
+        if self.cached_audit_key.as_ref() != Some(&audit_key) || self.cached_audit_report.is_none() {
+            self.cached_audit_report = Some(RenderDebugger::scan(
+                document_source,
+                document_name,
+                pdf_bytes,
+            ));
+            self.cached_audit_key = Some(audit_key);
+        }
+        let audit_report = self.cached_audit_report.clone().unwrap();
 
         // Clear expired feedback banner after 4 seconds
         if let Some((_, time)) = &self.status_feedback {
@@ -183,6 +205,10 @@ impl Drawer {
                                         Color32::from_rgb(r, g, b),
                                         format!("[{}]", diag.severity.label()),
                                     );
+
+                                    if let Some(ref f) = diag.file {
+                                        ui.colored_label(Color32::from_gray(160), format!("[{f}]"));
+                                    }
 
                                     if let Some(line) = diag.line {
                                         if ui.button(format!("Line {line}")).clicked() {
@@ -301,10 +327,18 @@ impl Drawer {
                     }
                     DrawerTab::Api => {
                         ui.label(RichText::new("Laketex Headless REST API Server").strong());
-                        ui.colored_label(
-                            Color32::from_rgb(152, 195, 121),
-                            format!("● Active on http://127.0.0.1:{api_port}"),
-                        );
+                        let example_port = api_port.unwrap_or(3030);
+                        if let Some(port) = api_port {
+                            ui.colored_label(
+                                Color32::from_rgb(152, 195, 121),
+                                format!("● Active on http://127.0.0.1:{port}"),
+                            );
+                        } else {
+                            ui.colored_label(
+                                Color32::from_gray(140),
+                                "○ Disabled by default (launch with `--with-api` to enable)",
+                            );
+                        }
                         ui.add_space(6.0);
 
                         ui.label(RichText::new("Available Endpoints:").strong());
@@ -318,7 +352,7 @@ impl Drawer {
                         ui.add_space(8.0);
                         ui.label(RichText::new("Example debug scan invocation:").strong());
                         ui.monospace(format!(
-                            "curl -X POST http://127.0.0.1:{api_port}/api/debug \\\n  -H \"Content-Type: application/json\" \\\n  -d '{{\"source\": \"\\\\begin{{pmatrix}} 1 & 2 \\\\\\\\ 3 & 4 \\\\end{{pmatrix}}\"}}'"
+                            "curl -X POST http://127.0.0.1:{example_port}/api/debug \\\n  -H \"Content-Type: application/json\" \\\n  -d '{{\"source\": \"\\\\begin{{pmatrix}} 1 & 2 \\\\\\\\ 3 & 4 \\\\end{{pmatrix}}\"}}'"
                         ));
                     }
                 });

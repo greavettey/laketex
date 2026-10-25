@@ -144,6 +144,12 @@ jobs:
           ARCHIVE_DIR="laketex-${TAG}-${{ matrix.target }}"
           mkdir -p "$ARCHIVE_DIR"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "$ARCHIVE_DIR/"
+          if [ "${{ runner.os }}" = "macOS" ] && [ -d "target/${{ matrix.target }}/release/LakeTeX.app" ]; then
+            cp -R "target/${{ matrix.target }}/release/LakeTeX.app" "$ARCHIVE_DIR/LakeTeX.app"
+            rm -f "$ARCHIVE_DIR/LakeTeX.app/Contents/MacOS/laketex"
+            cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "$ARCHIVE_DIR/LakeTeX.app/Contents/MacOS/laketex"
+            chmod +x "$ARCHIVE_DIR/LakeTeX.app/Contents/MacOS/laketex"
+          fi
           [ -f "README.md" ] && cp "README.md" "$ARCHIVE_DIR/"
           TAR_NAME="${ARCHIVE_DIR}.tar.gz"
           tar -czf "$TAR_NAME" -C "$ARCHIVE_DIR" .
