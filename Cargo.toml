@@ -1,6 +1,6 @@
 [package]
 name = "laketex"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024" 
 authors = ["Axel Greavette"]
 description = "Lightweight, portable LaTeX viewer and editor in Rust with live compilation, auto-package import, and headless API"
