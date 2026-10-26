@@ -49,12 +49,14 @@ To open an existing file directly:
    - **File Operations**: `New Document`, `Open File...`, `Save Document`, `Save As...`.
    - **Engine Selector Dropdown**: Toggle between `Native (Pure Rust)`, `Tectonic`, `pdfLaTeX`, `XeLaTeX`, or `LuaLaTeX`.
    - **Recompile Button (`Recompile`)**: Forces an immediate full compilation run.
+   - **Cancel Compilation Button (`Cancel` / `Escape`)**: Instantly aborts active or frozen compilation, killing the OS child process tree via `CompileCancellationToken`.
    - **Auto-Compile Toggle**: Toggles live debounced compilation as you type (default: ON, 180 ms debounce).
    - **Theme Selector Dropdown**: Choose between built-in themes (such as JetBrains Dracula) and custom JSON/YAML themes discovered on disk.
    - **Panel Visibility Buttons**: Toggle the left sidebar and bottom diagnostic drawer on or off.
 
 2. **Code Editor Panel (Center Left)**:
-   - **Syntax Highlighting**: Real-time syntax coloring for commands, math mode, comments, environments, and brackets.
+   - **Syntax Highlighting & Bracket Tree**: Real-time syntax coloring for commands, math mode, comments, environments, and brackets using resilient bracket-tree depth tracking.
+   - **Paired Bracket Jump Badge (`{…}`)**: Interactive header badge displaying the matching line of the currently enclosed bracket/brace pair. Click to immediately jump caret to the matching delimiter.
    - **Line Number Gutter**: Displays line numbers with red error dots (`●`) indicating syntax issues.
    - **Font Sizing**: Click `A+` or `A-` in the editor header to quickly adjust editor font size.
 
@@ -73,7 +75,14 @@ To open an existing file directly:
 
 5. **Bottom Collapsible Drawer**:
    - **Diagnostics**: Displays parsed compiler warnings, errors, line numbers, and file offsets.
-   - **Terminal Output**: Raw `stdout` and `stderr` logs for low-level debugging.
+   - **Render Audit**: Pinpoints unclosed matrix delimiters, math commands in plain text, and PDF issues with tailored suggestions.
+   - **Terminal Output (`Build Logs`)**: Raw `stdout` and `stderr` logs for low-level debugging.
+   - **Headless API**: Host port, stateful/stateless mode status, and curl invocation cheatsheet.
+   - **Audit Log Tab (`DrawerTab::AuditLog`)**: In-memory, virtualized session audit log tracking both user interactions and REST API edits in real time:
+     - `[USER]` (Cyan / Blue): User document edits, manual compiles, file opens, settings updates.
+     - `[API MUTATION]` (Green): REST API modifications via `POST /api/document`, `POST /api/navigate`, and background saves.
+     - `[API READ]` (Yellow / Gold): Telemetry and health probes via `GET /api/document`, `GET /health`, `GET /api/spec`.
+     - Features interactive query search, actor role pills (`All`, `User`, `API Edits`, `API Reads`), jump-to-line buttons, auto-scroll locking, and ephemeral in-memory storage (never written to disk).
    - **Error Export**: `Copy Report` and `Export Error Log...` buttons.
 
 ---
@@ -97,11 +106,16 @@ Laketex includes full forward and reverse synchronization between the source cod
 | Shortcut | Action |
 | :--- | :--- |
 | `Ctrl + S` | Save current document to disk |
-| `Ctrl + Shift + S` | Save document as a new file |
+| `Ctrl + Shift + S` | Save document as a new file (`Save As`) |
 | `Ctrl + O` | Open file dialog |
 | `Ctrl + N` | Create a new document |
 | `Ctrl + B` | Force recompile document (`Recompile`) |
-| `Ctrl + \` | Toggle left sidebar visibility |
+| `Ctrl + F` | Open Find drawer (search, next/previous, case, whole-word) |
+| `Ctrl + H` | Open Find & Replace drawer (replace, replace all) |
+| `Ctrl + P` | Open Working Directory Project Manager modal |
+| `Ctrl + ,` | Open Settings & Preferences dialog |
+| `Escape` | Cancel active or frozen compilation / Close find & replace / Dismiss modal |
+| `Ctrl + \` | Toggle left navigation sidebar visibility |
 | `Ctrl + J` | Toggle bottom diagnostic drawer |
 | `Ctrl + =` / `Ctrl + +` | Zoom in document preview |
 | `Ctrl + -` | Zoom out document preview |
@@ -220,7 +234,7 @@ Laketex ships with an authentic **Dracula (JetBrains)** theme built-in, styled p
 - Comments / Muted Text: `#6272a4`
 - Status Indicators: Error `#ff5555`, Warning `#ffb86c`, Success `#50fa7b`, Info `#8be9fd`
 
-Other built-in themes include `Academic Dark`, `Slate Minimal`, `Nord Frost`, and `Paper White`.
+Other built-in themes include `Synthwave Neon` (deep dark UI with radiant cyan, hot pink, spring mint, and canary yellow syntax highlighting), `Academic Dark`, `Slate Minimal`, `Nord Frost`, and `Paper White`.
 
 ### Creating Custom Themes (JSON or YAML)
 You can create custom themes simply by placing `.yaml`, `.yml`, or `.json` files:
@@ -262,17 +276,37 @@ colors:
 ```
 
 #### Supported Color Keys:
-- `background` / `window_fill` / `bg`
-- `panel_background` / `panel_fill` / `surface`
-- `editor_background` / `extreme_bg` / `code_bg`
-- `text` / `foreground` / `fg`
-- `text_muted` / `comment` / `muted`
-- `selection` / `selection_bg`
-- `selection_stroke`
-- `accent` / `primary`
-- `border` / `stroke`
-- `button_bg`, `button_hover`, `button_active`
-- `error`, `warning`, `success`, `info`
+- **UI Elements**:
+  - `background` / `window_fill` / `bg`: Outer window background
+  - `panel_background` / `panel_fill` / `surface`: Sidebar, drawer, and toolbar panels
+  - `editor_background` / `extreme_bg` / `code_bg`: Central code editor buffer
+  - `text` / `foreground` / `fg`: General readable text and labels
+  - `text_muted` / `comment` / `muted`: Muted secondary text and line numbers
+  - `selection` / `selection_bg`: Editor text selection background
+  - `selection_stroke`: Active selection border outline
+  - `accent` / `primary`: Caret, active tabs, primary buttons
+  - `border` / `stroke`: Panel borders and group dividers
+  - `button_bg`, `button_hover`, `button_active`: Button interaction states
+  - `error`, `warning`, `success`, `info`: Diagnostic notification badges
+
+- **Semantic Syntax Highlighting Keys**:
+  - `syntax_command`: LaTeX control commands (`\begin`, `\section`, `\textbf`, `\includegraphics`)
+  - `syntax_argument`: Command arguments and environment names (`itemize` in `\begin{itemize}`, `article` in `\documentclass{article}`)
+  - `syntax_package`: Imported package names in `\usepackage{...}` and `\RequirePackage{...}` (`amsmath`, `graphicx`, `hyperref`)
+  - `syntax_tag_property`: Property keys of tags/environments (`leftmargin`, `label` in `\begin{itemize}[leftmargin=0.15in, label={}]`)
+  - `syntax_property_number`: Integer, floating point, and dimensional values within tags (`0.15in`, `12pt`, `0.8\textwidth`, `10`)
+  - `syntax_property_boolean`: Boolean values within tags (`true`, `false`)
+  - `syntax_property_value`: General string values of properties within tags
+  - `syntax_math`: Inline math environments (`$...$`)
+  - `syntax_math_block`: Display math blocks (`$$...$$`)
+  - `syntax_brace`: Structural curly braces (`{` and `}`)
+  - `syntax_bracket`: Optional argument square brackets (`[` and `]`)
+  - `syntax_special`: Control characters (`&`, `_`, `^`, `~`, `#`)
+  - `syntax_comment`: Comments (`% ...`)
+  - `syntax_text`: Regular prose text
+
+- **Rainbow Bracket Tree Levels**:
+  - `bracket_level_0`, `bracket_level_1`, `bracket_level_2`, `bracket_level_3`: Depth-aware rainbow bracket nesting levels
 
 ---
 

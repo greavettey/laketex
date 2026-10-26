@@ -1425,6 +1425,7 @@ fn test_shadow_subdocument_staging_and_cleanup() {
             work_dir: Some(dir.path().to_path_buf()),
             doc_name: Some("main.tex".to_string()),
             allow_shell_escape: false,
+            cancel_token: None,
             shadow_subdocument: Some((intro_tex.clone(), unsaved_editor_content.to_string())),
         },
     )
@@ -1440,4 +1441,68 @@ fn test_shadow_subdocument_staging_and_cleanup() {
     // 2. Temporary shadow file must be cleaned up by ShadowCleanupGuard
     let shadow_file = chapters_dir.join(".laketex_shadow_intro.tex");
     assert!(!shadow_file.exists(), "Shadow file must be removed after compilation");
+}
+
+
+#[test]
+fn test_broadened_syntax_highlighting_all_tokens() {
+    let source = r#"\documentclass[11pt, a4paper]{article}
+\usepackage{amsmath, graphicx, hyperref}
+\RequirePackage[dvipsnames]{xcolor}
+\begin{document}
+\begin{itemize}[leftmargin=0.15in, label={}]
+    \item Item 1
+\end{itemize}
+\includegraphics[width=0.8\textwidth, draft=true]{figure.png}
+\end{document}
+"#;
+
+    let tokens = LatexLexer::tokenize(source);
+
+    // Verify package names
+    let pkg_names: Vec<&str> = tokens
+        .iter()
+        .filter(|t| t.token_type == TokenType::PackageName)
+        .map(|t| t.text)
+        .collect();
+    assert_eq!(pkg_names, vec!["amsmath", "graphicx", "hyperref", "xcolor"]);
+
+    // Verify tag properties in \begin{itemize}[leftmargin=0.15in, label={}]
+    let leftmargin_prop = tokens.iter().find(|t| t.text == "leftmargin").expect("leftmargin property not found");
+    assert_eq!(leftmargin_prop.token_type, TokenType::TagProperty);
+
+    let label_prop = tokens.iter().find(|t| t.text == "label").expect("label property not found");
+    assert_eq!(label_prop.token_type, TokenType::TagProperty);
+
+    // Verify tag property in \RequirePackage[dvipsnames]
+    let dvipsnames_prop = tokens.iter().find(|t| t.text == "dvipsnames").expect("dvipsnames not found");
+    assert_eq!(dvipsnames_prop.token_type, TokenType::TagProperty);
+
+    // Verify tag property in \includegraphics[width=..., draft=...]
+    let width_prop = tokens.iter().find(|t| t.text == "width").expect("width property not found");
+    assert_eq!(width_prop.token_type, TokenType::TagProperty);
+
+    let draft_prop = tokens.iter().find(|t| t.text == "draft").expect("draft property not found");
+    assert_eq!(draft_prop.token_type, TokenType::TagProperty);
+
+    // Verify dimension/number property values
+    let margin_val = tokens.iter().find(|t| t.text == "0.15in").expect("0.15in not found");
+    assert_eq!(margin_val.token_type, TokenType::PropertyValueNumber);
+
+    let width_val = tokens.iter().find(|t| t.text == "0.8\\textwidth").expect("0.8\\textwidth not found");
+    assert_eq!(width_val.token_type, TokenType::PropertyValueNumber);
+
+    let font_size_val = tokens.iter().find(|t| t.text == "11pt").expect("11pt not found");
+    assert_eq!(font_size_val.token_type, TokenType::PropertyValueNumber);
+
+    // Verify boolean property value
+    let draft_val = tokens.iter().find(|t| t.text == "true").expect("true not found");
+    assert_eq!(draft_val.token_type, TokenType::PropertyValueBoolean);
+
+    // Verify command argument
+    let itemize_arg = tokens.iter().find(|t| t.text == "itemize").expect("itemize not found");
+    assert_eq!(itemize_arg.token_type, TokenType::Argument);
+
+    let article_arg = tokens.iter().find(|t| t.text == "article").expect("article not found");
+    assert_eq!(article_arg.token_type, TokenType::Argument);
 }

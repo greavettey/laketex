@@ -629,7 +629,7 @@ impl PackageManager {
             let output = crate::create_hidden_command(candidate)
                 .args([
                     "-c",
-                    "import sys, sysconfig, os, site; print(sys.executable); print(sys.version.split()[0]); print(sysconfig.get_path('scripts') or ''); ub = getattr(site, 'USER_BASE', ''); print(os.path.join(ub, 'Scripts' if os.name == 'nt' else 'bin') if ub else ''); is_conda = ('conda' in sys.version.lower()) or ('continuum' in sys.version.lower()) or os.path.exists(os.path.join(sys.prefix, 'conda-meta')); print('1' if is_conda else '0'); print(sys.prefix if is_conda else ''); print(os.path.basename(sys.prefix) if is_conda else '')",
+                    "import sys, sysconfig, os, site; print(sys.executable); print(sys.version.split()[0] if sys.version else ''); print(sysconfig.get_path('scripts') or ''); ub = getattr(site, 'USER_BASE', ''); print(os.path.join(ub, 'Scripts' if os.name == 'nt' else 'bin') if ub else ''); is_conda = ('conda' in sys.version.lower()) or ('continuum' in sys.version.lower()) or os.path.exists(os.path.join(sys.prefix, 'conda-meta')); print('1' if is_conda else '0'); print(sys.prefix if is_conda else ''); print(os.path.basename(sys.prefix) if is_conda else ''); has_pip = 0;\ntry:\n    import pip; has_pip = 1\nexcept Exception: pass\nif not has_pip: has_pip = 1 if (os.path.exists(os.path.join(sys.prefix, 'Scripts', 'pip.exe' if os.name == 'nt' else 'pip')) or os.path.exists(os.path.join(sys.prefix, 'bin', 'pip'))) else 0;\nprint('1' if has_pip else '0')",
                 ])
                 .output();
 
@@ -662,13 +662,7 @@ impl PackageManager {
                         .next()
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
-
-                    // Check if pip is available with this interpreter
-                    let pip_status = crate::create_hidden_command(candidate)
-                        .args(["-m", "pip", "--version"])
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
+                    let pip_status = lines.next().map(|s| s.trim() == "1").unwrap_or(false);
 
                     let conda_cli_path = if is_conda {
                         Self::find_conda_cli(conda_prefix.as_deref().map(Path::new))
@@ -728,7 +722,11 @@ impl PackageManager {
                         environment_name: env_name,
                     };
 
+                    let should_break = score >= 60;
                     probed_list.push(ProbedCandidate { env, score });
+                    if should_break {
+                        break;
+                    }
                 }
             }
         }
@@ -770,6 +768,13 @@ impl PackageManager {
             conda_cli_path: None,
             environment_name: None,
         }
+    }
+
+    /// Warms up Python environment detection on a background thread so it is cached without blocking GUI startup.
+    pub fn warmup_in_background() {
+        std::thread::spawn(|| {
+            let _ = Self::check_python_environment();
+        });
     }
 
     /// Checks if an executable exists on PATH, Conda environments, virtual environments,
@@ -824,53 +829,7 @@ impl PackageManager {
             }
         }
 
-        // 2. Check detected Python scripts directory
-        let env = Self::check_python_environment();
-        if let Some(scripts_dir) = &env.scripts_dir {
-            let scripts_path = PathBuf::from(scripts_dir);
-            let candidate = scripts_path.join(&exe_name);
-            if candidate.is_file() {
-                Self::add_to_process_path(&scripts_path);
-                return Some(candidate);
-            }
-        }
-
-        // 3. Check detected Python user-level scripts directory (e.g. from pip install --user)
-        if let Some(user_scripts_dir) = &env.user_scripts_dir {
-            let user_scripts_path = PathBuf::from(user_scripts_dir);
-            let candidate = user_scripts_path.join(&exe_name);
-            if candidate.is_file() {
-                Self::add_to_process_path(&user_scripts_path);
-                return Some(candidate);
-            }
-        }
-
-        // 4. Check adjacent to detected Python executable
-        if let Some(py_path) = &env.python_path {
-            let py_buf = PathBuf::from(py_path);
-            if let Some(py_dir) = py_buf.parent() {
-                let scripts = py_dir.join("Scripts");
-                let candidate = scripts.join(&exe_name);
-                if candidate.is_file() {
-                    Self::add_to_process_path(&scripts);
-                    return Some(candidate);
-                }
-                let bin = py_dir.join("bin");
-                let cand_bin = bin.join(&exe_name);
-                if cand_bin.is_file() {
-                    Self::add_to_process_path(&bin);
-                    return Some(cand_bin);
-                }
-                let lib_bin = py_dir.join("Library").join("bin");
-                let cand_lib = lib_bin.join(&exe_name);
-                if cand_lib.is_file() {
-                    Self::add_to_process_path(&lib_bin);
-                    return Some(cand_lib);
-                }
-            }
-        }
-
-        // 5. Check active virtualenv (VIRTUAL_ENV)
+        // 2. Check active virtualenv (VIRTUAL_ENV)
         if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
             let venv_path = PathBuf::from(&venv);
             let check_dirs = if cfg!(windows) {
@@ -887,7 +846,7 @@ impl PackageManager {
             }
         }
 
-        // 6. Check active Conda prefix (CONDA_PREFIX)
+        // 3. Check active Conda prefix (CONDA_PREFIX)
         if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
             let prefix_path = PathBuf::from(&prefix);
             let check_dirs = if cfg!(windows) {
@@ -908,7 +867,7 @@ impl PackageManager {
             }
         }
 
-        // 7. Check all discovered Conda environments (base and named envs in ~/.conda/environments.txt)
+        // 4. Check all discovered Conda environments (base and named envs in ~/.conda/environments.txt)
         for env_path in Self::discover_conda_environments() {
             let check_dirs = if cfg!(windows) {
                 vec![
@@ -928,7 +887,7 @@ impl PackageManager {
             }
         }
 
-        // 8. Check common Python scripts paths on Windows
+        // 5. Check common Python scripts paths on Windows
         if cfg!(windows) {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
                 let local_path = PathBuf::from(local_app_data).join("Programs").join("Python");
@@ -982,6 +941,28 @@ impl PackageManager {
             if cand.is_file() {
                 Self::add_to_process_path(&usr_local_bin);
                 return Some(cand);
+            }
+        }
+
+        // 6. Check already-cached Python environment scripts directories if populated
+        if let Ok(read) = CACHED_PYTHON_ENV.read() {
+            if let Some(ref env) = *read {
+                if let Some(scripts_dir) = &env.scripts_dir {
+                    let scripts_path = PathBuf::from(scripts_dir);
+                    let candidate = scripts_path.join(&exe_name);
+                    if candidate.is_file() {
+                        Self::add_to_process_path(&scripts_path);
+                        return Some(candidate);
+                    }
+                }
+                if let Some(user_scripts_dir) = &env.user_scripts_dir {
+                    let user_scripts_path = PathBuf::from(user_scripts_dir);
+                    let candidate = user_scripts_path.join(&exe_name);
+                    if candidate.is_file() {
+                        Self::add_to_process_path(&user_scripts_path);
+                        return Some(candidate);
+                    }
+                }
             }
         }
 

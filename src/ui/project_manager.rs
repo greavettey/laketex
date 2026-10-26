@@ -297,10 +297,44 @@ pub struct ProjectManager {
 }
 
 impl ProjectManager {
+    /// Resolves the default working directory for the session.
+    ///
+    /// When the executable is launched directly by double-clicking inside a Cargo build directory
+    /// (e.g., `target/release` or `target/debug`), automatically steps up to the parent workspace root
+    /// containing `Cargo.toml` so startup does not scan build artifacts.
+    pub fn resolve_default_working_dir(initial_file: Option<&Path>) -> PathBuf {
+        if let Some(file_path) = initial_file {
+            if let Some(parent) = file_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    return parent.to_path_buf();
+                }
+            }
+        }
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::escape_cargo_target_dir(cwd)
+    }
+
+    fn escape_cargo_target_dir(dir: PathBuf) -> PathBuf {
+        if let Some(parent) = dir.parent() {
+            let parent_name = parent.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if parent_name.eq_ignore_ascii_case("target") {
+                if let Some(grandparent) = parent.parent() {
+                    if grandparent.join("Cargo.toml").is_file() {
+                        return grandparent.to_path_buf();
+                    }
+                }
+            }
+            let dir_name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if dir_name.eq_ignore_ascii_case("target") && parent.join("Cargo.toml").is_file() {
+                return parent.to_path_buf();
+            }
+        }
+        dir
+    }
+
     /// Initializes a new ProjectManager rooted at `initial_dir` or the current directory.
     pub fn new(initial_dir: Option<PathBuf>) -> Self {
-        let root = initial_dir
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let root = initial_dir.unwrap_or_else(|| Self::resolve_default_working_dir(None));
         let mut mgr = Self {
             root_dir: root.clone(),
             show_modal: false,
@@ -384,6 +418,7 @@ impl ProjectManager {
             &self.root_dir,
             Path::new(""),
             0,
+            true,
             &self.expanded_folders,
             self.is_initial_scan,
             &mut visited_ancestors,
@@ -396,12 +431,32 @@ impl ProjectManager {
         self.rebuild_cached_visible_nodes();
     }
 
+    /// Returns true if a path represents an OS user/container root (Desktop, Downloads, UserProfile, Root drive)
+    /// where child folders should not be eagerly recursed into during startup.
+    pub fn is_system_or_user_root(dir: &Path) -> bool {
+        if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
+            if name.eq_ignore_ascii_case("Desktop")
+                || name.eq_ignore_ascii_case("Downloads")
+                || name.eq_ignore_ascii_case("Documents")
+            {
+                return true;
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+            if Path::new(&home) == dir {
+                return true;
+            }
+        }
+        dir.parent().is_none()
+    }
+
     /// Recursively scans a directory and builds the project tree.
     fn scan_dir(
         dir: &Path,
         root: &Path,
         rel_dir: &Path,
         depth: usize,
+        check_canonical: bool,
         expanded_folders: &HashSet<PathBuf>,
         is_initial_scan: bool,
         visited_ancestors: &mut HashSet<PathBuf>,
@@ -411,8 +466,12 @@ impl ProjectManager {
             return nodes;
         }
 
-        // Symlink cycle detection: ensure we do not enter an ancestor directory
-        let canonical_dir = std::fs::canonicalize(dir).ok();
+        // Symlink cycle detection: only canonicalize root or symlink/junction directories
+        let canonical_dir = if check_canonical {
+            std::fs::canonicalize(dir).ok()
+        } else {
+            None
+        };
         if let Some(ref c) = canonical_dir {
             if !visited_ancestors.insert(c.clone()) {
                 // Cycle detected in directory tree; stop recursion
@@ -430,6 +489,9 @@ impl ProjectManager {
             }
         };
 
+        let is_root_container = depth == 0 && Self::is_system_or_user_root(dir);
+
+        let mut raw_items = Vec::new();
         for entry in entries.flatten() {
             let file_name = entry.file_name();
             let name_str = file_name.to_string_lossy();
@@ -449,8 +511,6 @@ impl ProjectManager {
                 file_type_res.as_ref().map(|ft| ft.is_dir()).unwrap_or_else(|_| path.is_dir())
             };
 
-            let file_type = ProjectFileType::from_name_and_is_dir(&name, is_dir);
-
             let size_bytes = if is_dir {
                 0
             } else {
@@ -464,30 +524,52 @@ impl ProjectManager {
             };
 
             let name_lower = name.to_lowercase();
+            let file_type = ProjectFileType::from_name_and_is_dir(&name, is_dir);
 
-            let children = if file_type == ProjectFileType::Directory {
+            raw_items.push((name, name_lower, path, relative_path, file_type, size_bytes, is_dir, is_symlink));
+        }
+
+        for (name, name_lower, path, relative_path, file_type, size_bytes, is_dir, is_symlink) in raw_items {
+            let is_expanded = if is_dir {
+                if is_initial_scan {
+                    // For root container directories (like Desktop), keep folders collapsed by default.
+                    // For regular LaTeX project folders, expand top-level folders.
+                    depth == 0 && !is_root_container
+                } else {
+                    expanded_folders.contains(&path)
+                }
+            } else {
+                false
+            };
+
+            let should_recurse = if is_dir {
+                if is_root_container {
+                    // Container directories (like Desktop) are never eagerly recursed into on startup
+                    false
+                } else if is_initial_scan {
+                    // For normal projects, recurse into directories up to depth 3
+                    depth < 3
+                } else {
+                    // On refresh / manual expansion, recurse if expanded or depth 0
+                    expanded_folders.contains(&path)
+                }
+            } else {
+                false
+            };
+
+            let children = if should_recurse {
                 Self::scan_dir(
                     &path,
                     root,
                     &relative_path,
                     depth + 1,
+                    is_symlink,
                     expanded_folders,
                     is_initial_scan,
                     visited_ancestors,
                 )
             } else {
                 Vec::new()
-            };
-
-            let is_expanded = if file_type == ProjectFileType::Directory {
-                if is_initial_scan {
-                    // Expand top-level directory items by default for quick access
-                    depth == 0
-                } else {
-                    expanded_folders.contains(&path)
-                }
-            } else {
-                false
             };
 
             nodes.push(ProjectNode {
@@ -520,16 +602,6 @@ impl ProjectManager {
             }
         });
 
-        // In initial scan, if there are many folders (> 25) or items (> 50), keep top-level folders collapsed
-        // to preserve performance on large directories.
-        if is_initial_scan && depth == 0 && (nodes.iter().filter(|n| n.file_type == ProjectFileType::Directory).count() > 25 || nodes.len() > 50) {
-            for node in &mut nodes {
-                if node.file_type == ProjectFileType::Directory {
-                    node.is_expanded = false;
-                }
-            }
-        }
-
         nodes
     }
 
@@ -539,6 +611,11 @@ impl ProjectManager {
             || name.starts_with("_minted-")
             || name.ends_with('~')
             || name.ends_with(".tmp")
+            || name.ends_with(".rlib")
+            || name.ends_with(".rmeta")
+            || name.ends_with(".pdb")
+            || name.ends_with(".exp")
+            || name.ends_with(".obj")
         {
             return true;
         }
@@ -546,6 +623,22 @@ impl ProjectManager {
             name,
             "target"
                 | "node_modules"
+                | "incremental"
+                | "__pycache__"
+                | ".git"
+                | ".svn"
+                | ".hg"
+                | "venv"
+                | ".venv"
+                | "env"
+                | ".env"
+                | "dist"
+                | "build"
+                | "bin"
+                | "obj"
+                | ".gradle"
+                | ".idea"
+                | ".vscode"
                 | "laketex_doc.tex"
                 | "laketex_doc.pdf"
                 | "laketex_doc.aux"
@@ -678,6 +771,11 @@ impl ProjectManager {
         self.expanded_folders.insert(folder_path.clone());
         self.refresh();
         self.set_status(format!("Created folder: {}", trimmed));
+        crate::ui::drawer::record_user_audit(
+            "Folder Created",
+            format!("Created folder '{trimmed}'"),
+            None,
+        );
         Ok(folder_path)
     }
 
@@ -721,6 +819,11 @@ impl ProjectManager {
         self.expanded_folders.insert(self.target_folder.clone());
         self.refresh();
         self.set_status(format!("Created file: {}", trimmed));
+        crate::ui::drawer::record_user_audit(
+            "File Created",
+            format!("Created project file '{trimmed}'"),
+            None,
+        );
         Ok(file_path)
     }
 
@@ -759,6 +862,11 @@ impl ProjectManager {
         self.refresh();
         let target_display = self.relative_target_display();
         self.set_status(format!("Imported {count} file(s) into {target_display}"));
+        crate::ui::drawer::record_user_audit(
+            "Files Imported",
+            format!("Imported {count} file(s) into {target_display}"),
+            None,
+        );
         Ok(count)
     }
 
@@ -782,6 +890,11 @@ impl ProjectManager {
         self.refresh();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         self.set_status(format!("Deleted: {name}"));
+        crate::ui::drawer::record_user_audit(
+            "Entry Deleted",
+            format!("Deleted '{name}' from project"),
+            None,
+        );
         Ok(())
     }
 
@@ -809,9 +922,19 @@ impl ProjectManager {
         if new_path.exists() {
             return Err("Destination name already exists".to_string());
         }
+        let old_name = old_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         std::fs::rename(old_path, &new_path).map_err(|e| e.to_string())?;
         self.refresh();
         self.set_status(format!("Renamed to: {trimmed}"));
+        crate::ui::drawer::record_user_audit(
+            "Entry Renamed",
+            format!("Renamed '{old_name}' to '{trimmed}'"),
+            None,
+        );
         Ok(new_path)
     }
 
@@ -887,10 +1010,41 @@ impl ProjectManager {
 
     /// Expands all directory nodes in the project tree.
     pub fn expand_all(&mut self) {
+        Self::populate_all_children(&mut self.root_nodes, &self.root_dir, &self.expanded_folders, 0);
         Self::set_all_expanded(&mut self.root_nodes, true);
         Self::collect_expanded_paths(&self.root_nodes, &mut self.expanded_folders);
+        self.cached_metrics = Self::calculate_metrics(&self.root_nodes);
         self.visible_nodes_dirty = true;
         self.rebuild_cached_visible_nodes();
+    }
+
+    fn populate_all_children(
+        nodes: &mut [ProjectNode],
+        root: &Path,
+        expanded_folders: &HashSet<PathBuf>,
+        depth: usize,
+    ) {
+        if depth > MAX_SCAN_DEPTH {
+            return;
+        }
+        for node in nodes {
+            if node.file_type == ProjectFileType::Directory {
+                if node.children.is_empty() {
+                    let mut visited = HashSet::new();
+                    node.children = Self::scan_dir(
+                        &node.path,
+                        root,
+                        &node.relative_path,
+                        depth + 1,
+                        false,
+                        expanded_folders,
+                        false,
+                        &mut visited,
+                    );
+                }
+                Self::populate_all_children(&mut node.children, root, expanded_folders, depth + 1);
+            }
+        }
     }
 
     /// Sets expansion state of all nodes recursively.
@@ -919,13 +1073,53 @@ impl ProjectManager {
     pub fn set_folder_expanded(&mut self, target_path: &Path, expanded: bool) -> bool {
         if expanded {
             self.expanded_folders.insert(target_path.to_path_buf());
+            let _ = Self::populate_node_children_if_empty(
+                &mut self.root_nodes,
+                target_path,
+                &self.root_dir,
+                &self.expanded_folders,
+            );
         } else {
             self.expanded_folders.remove(target_path);
         }
         let res = Self::set_expanded_in_nodes(&mut self.root_nodes, target_path, expanded);
+        self.cached_metrics = Self::calculate_metrics(&self.root_nodes);
         self.visible_nodes_dirty = true;
         self.rebuild_cached_visible_nodes();
         res
+    }
+
+    /// Lazily populates the children of a specific directory node matching `target_path` if empty.
+    pub fn populate_node_children_if_empty(
+        nodes: &mut [ProjectNode],
+        target_path: &Path,
+        root: &Path,
+        expanded_folders: &HashSet<PathBuf>,
+    ) -> bool {
+        for node in nodes {
+            if node.path == target_path {
+                if node.file_type == ProjectFileType::Directory && node.children.is_empty() {
+                    let mut visited = HashSet::new();
+                    node.children = Self::scan_dir(
+                        &node.path,
+                        root,
+                        &node.relative_path,
+                        1,
+                        false,
+                        expanded_folders,
+                        false,
+                        &mut visited,
+                    );
+                }
+                return true;
+            }
+            if !node.children.is_empty() {
+                if Self::populate_node_children_if_empty(&mut node.children, target_path, root, expanded_folders) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Sets the expansion state of a specific directory matching `target_path`.
@@ -1344,13 +1538,19 @@ Write your section content here.
         for intent in intents {
             match intent {
                 UiIntent::ToggleExpand(path) => {
-                    if Self::toggle_expand_in_nodes(&mut self.root_nodes, &path) {
+                    if Self::toggle_expand_in_nodes(
+                        &mut self.root_nodes,
+                        &path,
+                        &self.root_dir,
+                        &self.expanded_folders,
+                    ) {
                         if self.expanded_folders.contains(&path) {
                             self.expanded_folders.remove(&path);
                         } else {
                             self.expanded_folders.insert(path);
                         }
                     }
+                    self.cached_metrics = Self::calculate_metrics(&self.root_nodes);
                     self.visible_nodes_dirty = true;
                     self.rebuild_cached_visible_nodes();
                 }
@@ -1746,14 +1946,33 @@ Write your section content here.
     }
 
     /// Toggles the `is_expanded` state of a folder matching `target_path`.
-    fn toggle_expand_in_nodes(nodes: &mut [ProjectNode], target_path: &Path) -> bool {
+    /// Lazily scans and populates children on demand if they have not been loaded yet.
+    fn toggle_expand_in_nodes(
+        nodes: &mut [ProjectNode],
+        target_path: &Path,
+        root: &Path,
+        expanded_folders: &HashSet<PathBuf>,
+    ) -> bool {
         for node in nodes {
             if node.path == target_path {
                 node.is_expanded = !node.is_expanded;
+                if node.is_expanded && node.file_type == ProjectFileType::Directory && node.children.is_empty() {
+                    let mut visited = HashSet::new();
+                    node.children = Self::scan_dir(
+                        &node.path,
+                        root,
+                        &node.relative_path,
+                        1,
+                        false,
+                        expanded_folders,
+                        false,
+                        &mut visited,
+                    );
+                }
                 return true;
             }
             if !node.children.is_empty() {
-                if Self::toggle_expand_in_nodes(&mut node.children, target_path) {
+                if Self::toggle_expand_in_nodes(&mut node.children, target_path, root, expanded_folders) {
                     return true;
                 }
             }
@@ -2120,6 +2339,7 @@ mod tests {
             &root,
             Path::new(""),
             0,
+            true,
             &HashSet::new(),
             false,
             &mut visited,
@@ -2184,6 +2404,42 @@ mod tests {
         // Should find dir_42 and item_42_17.tex (2 items)
         assert_eq!(pm.cached_visible_nodes.len(), 2);
         assert!(search_elapsed.as_millis() < 50, "Search took too long: {:?}", search_elapsed);
+    }
+
+    #[test]
+    fn test_escape_cargo_target_dir_and_rust_artifact_ignoring() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_root = temp_dir.path().to_path_buf();
+        std::fs::write(workspace_root.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+        let target_release = workspace_root.join("target").join("release");
+        let target_debug = workspace_root.join("target").join("debug");
+        let normal_sub = workspace_root.join("docs").join("release");
+        std::fs::create_dir_all(&target_release).unwrap();
+        std::fs::create_dir_all(&target_debug).unwrap();
+        std::fs::create_dir_all(&normal_sub).unwrap();
+
+        // Double-clicking inside target/release or target/debug should step up to workspace_root
+        assert_eq!(
+            ProjectManager::escape_cargo_target_dir(target_release),
+            workspace_root
+        );
+        assert_eq!(
+            ProjectManager::escape_cargo_target_dir(target_debug),
+            workspace_root
+        );
+
+        // Normal directories must not be altered
+        assert_eq!(
+            ProjectManager::escape_cargo_target_dir(normal_sub.clone()),
+            normal_sub
+        );
+
+        // Rust build artifacts should be ignored
+        assert!(ProjectManager::is_ignored("libfoo.rlib"));
+        assert!(ProjectManager::is_ignored("libfoo.rmeta"));
+        assert!(ProjectManager::is_ignored("laketex.pdb"));
+        assert!(ProjectManager::is_ignored("incremental"));
     }
 }
 

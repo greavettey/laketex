@@ -7,9 +7,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use clap::Parser;
-use laketex::headless::{CliArgs, HeadlessServer};
+use laketex::headless::{CliArgs, HeadlessServer, SharedAppState};
 use laketex::ui::LakeTexApp;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 #[cfg(windows)]
 fn attach_parent_console() {
@@ -39,11 +40,18 @@ fn attach_parent_console() {
     }
 }
 
+use laketex::{log_startup, MAIN_START};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    MAIN_START.get_or_init(std::time::Instant::now);
+    log_startup("main() started");
+
     #[cfg(windows)]
     attach_parent_console();
+    log_startup("attach_parent_console done");
 
     let args = CliArgs::parse();
+    log_startup("CliArgs::parse done");
 
     // If a CLI subcommand was provided, run headless and exit
     if let Some(cmd) = args.command {
@@ -51,17 +59,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Only launch background headless REST API server when explicitly requested via --with-api
+    if args.with_state && !args.with_api {
+        eprintln!(
+            "[Laketex] Warning: --with-state requires --with-api to enable the stateful REST API server."
+        );
+    }
     let config = laketex::ui::config::AppConfig::load();
+    log_startup("AppConfig::load done");
     let api_port = if args.with_api {
         Some(args.api_port)
     } else {
         None
     };
+    let shared_api_state = if args.with_api && args.with_state {
+        Some(Arc::new(SharedAppState::default()))
+    } else {
+        None
+    };
     let _api_handle = if let Some(port) = api_port {
-        Some(HeadlessServer::start_background_with_options(
+        Some(HeadlessServer::start_background_with_state(
             "127.0.0.1",
             port,
             config.allow_shell_escape,
+            shared_api_state.clone(),
         ))
     } else {
         None
@@ -81,11 +101,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let file_to_open = args.file;
 
+    log_startup("eframe::run_native about to be called");
+
     eframe::run_native(
         "Laketex",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(LakeTexApp::new(cc, file_to_open, api_port)))
+            log_startup("eframe closure started -> calling LakeTexApp::new_with_state");
+            let app = LakeTexApp::new_with_state(
+                cc,
+                file_to_open,
+                api_port,
+                shared_api_state,
+            );
+            log_startup("LakeTexApp::new_with_state finished");
+            Ok(Box::new(app))
         }),
     )?;
 

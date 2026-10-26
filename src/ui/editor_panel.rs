@@ -8,9 +8,10 @@
 //! - Zoomable font size controls
 
 use crate::compiler::Diagnostic;
-use crate::document::lexer::LatexLexer;
+use crate::document::lexer::{ActiveBracketMatch, BracketTree, LatexLexer};
 use crate::t;
 use egui::{vec2, Align, Align2, Color32, FontId, Key, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Search and replace state for the editor.
 #[derive(Debug, Clone, Default)]
@@ -182,6 +183,12 @@ pub struct EditorPanel {
     pub font_size: f32,
     /// Find and replace panel state
     pub find_replace: FindReplaceState,
+    /// Cached hash of the document source for the bracket tree
+    cached_bracket_hash: Option<u64>,
+    /// Cached syntax-aware bracket tree for paired bracket highlighting
+    cached_bracket_tree: BracketTree,
+    /// Pending audit event `(action, details, target_line)` emitted by editor actions (e.g. Replace All)
+    pub pending_audit_event: Option<(String, String, Option<usize>)>,
 }
 
 impl Default for EditorPanel {
@@ -192,6 +199,9 @@ impl Default for EditorPanel {
             last_cursor_range: None,
             font_size: 13.5,
             find_replace: FindReplaceState::default(),
+            cached_bracket_hash: None,
+            cached_bracket_tree: BracketTree::default(),
+            pending_audit_event: None,
         }
     }
 }
@@ -315,6 +325,19 @@ impl EditorPanel {
         diagnostics: &[Diagnostic],
         is_dark: bool,
     ) -> bool {
+        self.show_with_theme(ui, content, diagnostics, is_dark, None)
+    }
+
+    /// Renders the central code editor pane with line numbers, error margin badges,
+    /// find/replace search bar, and live syntax highlighting using a custom theme if provided.
+    pub fn show_with_theme(
+        &mut self,
+        ui: &mut Ui,
+        content: &mut String,
+        diagnostics: &[Diagnostic],
+        is_dark: bool,
+        theme: Option<&crate::ui::theme::ThemeConfig>,
+    ) -> bool {
         let mut text_changed = false;
         let line_count = content.lines().count().max(1);
         let error_lines: Vec<usize> = diagnostics
@@ -324,6 +347,20 @@ impl EditorPanel {
             .collect();
 
         let editor_id = egui::Id::new("latex_source_code_editor");
+
+        // Update cached bracket tree only when document content hash changes
+        let mut content_hasher = DefaultHasher::new();
+        content.hash(&mut content_hasher);
+        let content_hash = content_hasher.finish();
+        if self.cached_bracket_hash != Some(content_hash) {
+            self.cached_bracket_tree = BracketTree::parse(content);
+            self.cached_bracket_hash = Some(content_hash);
+        }
+
+        // Resolve active bracket pair at current caret position
+        let pre_caret = self.last_cursor_range.and_then(|(s, e)| if s == e { Some(s) } else { None });
+        let mut active_bracket_match: Option<ActiveBracketMatch> = pre_caret
+            .and_then(|caret_idx| self.cached_bracket_tree.active_match_at_cursor(caret_idx));
 
         // Handle Escape to close find/replace
         if self.find_replace.is_open && ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -356,6 +393,38 @@ impl EditorPanel {
                         )
                         .selectable(false),
                     );
+                }
+
+                if let Some(bm) = active_bracket_match {
+                    let (open_ch, close_ch) = bm.clicked.kind.delimiters();
+                    if let Some((open_node, close_node)) = bm.ordered_pair() {
+                        let badge_label = if open_node.line == close_node.line {
+                            format!("{open_ch}…{close_ch} Ln {} (depth {})", open_node.line, open_node.depth + 1)
+                        } else {
+                            format!("{open_ch}…{close_ch} Ln {} ↔ Ln {}", open_node.line, close_node.line)
+                        };
+                        let badge_color = LatexLexer::bracket_depth_color(open_node.depth, true, is_dark);
+                        if ui
+                            .button(RichText::new(badge_label).small().color(badge_color))
+                            .on_hover_text("Click to jump caret to the paired bracket")
+                            .clicked()
+                        {
+                            if let Some(partner) = bm.partner {
+                                self.target_selection = Some((partner.char_idx, partner.char_idx));
+                                self.target_scroll_line = Some(partner.line);
+                            }
+                        }
+                    } else {
+                        let ch = if bm.clicked.is_open { open_ch } else { close_ch };
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("⚠ Unmatched '{ch}' (Ln {})", bm.clicked.line))
+                                    .small()
+                                    .color(Color32::from_rgb(235, 87, 87)),
+                            )
+                            .selectable(false),
+                        );
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -551,8 +620,15 @@ impl EditorPanel {
 
                         let rep_input_active = rep_resp.has_focus() || (rep_resp.lost_focus() && enter_pressed);
                         if rep_input_active && enter_pressed {
+                            let q = self.find_replace.search_query.clone();
+                            let r = self.find_replace.replace_text.clone();
                             if self.find_replace.replace_current(content) {
                                 text_changed = true;
+                                self.pending_audit_event = Some((
+                                    "Find & Replace".to_string(),
+                                    format!("Replaced occurrence of '{q}' with '{r}'"),
+                                    None,
+                                ));
                                 if !self.find_replace.matches.is_empty() {
                                     self.select_and_scroll_to_match(content);
                                 }
@@ -565,8 +641,15 @@ impl EditorPanel {
                             .on_hover_text("Replace currently selected match and move to next (Enter)")
                             .clicked()
                         {
+                            let q = self.find_replace.search_query.clone();
+                            let r = self.find_replace.replace_text.clone();
                             if self.find_replace.replace_current(content) {
                                 text_changed = true;
+                                self.pending_audit_event = Some((
+                                    "Find & Replace".to_string(),
+                                    format!("Replaced occurrence of '{q}' with '{r}'"),
+                                    None,
+                                ));
                                 if !self.find_replace.matches.is_empty() {
                                     self.select_and_scroll_to_match(content);
                                 }
@@ -578,8 +661,16 @@ impl EditorPanel {
                             .on_hover_text("Replace all occurrences throughout document")
                             .clicked()
                         {
+                            let count = self.find_replace.matches.len();
+                            let q = self.find_replace.search_query.clone();
+                            let r = self.find_replace.replace_text.clone();
                             if self.find_replace.replace_all(content) {
                                 text_changed = true;
+                                self.pending_audit_event = Some((
+                                    "Replace All".to_string(),
+                                    format!("Replaced all {count} occurrence(s) of '{q}' with '{r}'"),
+                                    None,
+                                ));
                             }
                         }
                     });
@@ -673,9 +764,30 @@ impl EditorPanel {
                 // Padding between separator and text
                 let (_space_rect, _) = ui.allocate_exact_size(vec2(4.0, 0.0), Sense::hover());
 
-                // Main syntax-highlighted code editor
+                // Main syntax-highlighted code editor with bracket-tree awareness
+                let bracket_tree_ref = &self.cached_bracket_tree;
+                let layouter_active_match = active_bracket_match;
+                let content_len = content.len();
                 let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
-                    let mut job = LatexLexer::highlight(text, is_dark, font_id.clone());
+                    let mut job = if text.len() == content_len {
+                        LatexLexer::highlight_with_brackets_and_theme(
+                            text,
+                            is_dark,
+                            font_id.clone(),
+                            bracket_tree_ref,
+                            layouter_active_match,
+                            theme,
+                        )
+                    } else {
+                        LatexLexer::highlight_with_brackets_and_theme(
+                            text,
+                            is_dark,
+                            font_id.clone(),
+                            &BracketTree::parse(text),
+                            None,
+                            theme,
+                        )
+                    };
                     job.wrap.max_width = wrap_width;
                     ui.fonts(|f| f.layout_job(job))
                 };
@@ -691,6 +803,10 @@ impl EditorPanel {
 
                 if output.response.changed() {
                     text_changed = true;
+                    let mut h = DefaultHasher::new();
+                    content.hash(&mut h);
+                    self.cached_bracket_hash = Some(h.finish());
+                    self.cached_bracket_tree = BracketTree::parse(content);
                 }
 
                 // Update last known cursor range from output or TextEditState
@@ -706,7 +822,83 @@ impl EditorPanel {
                     }
                 }
 
+                // Refresh active bracket match immediately if caret moved on this frame
+                let post_caret = self.last_cursor_range.and_then(|(s, e)| if s == e { Some(s) } else { None });
+                let updated_bracket_match = post_caret
+                    .and_then(|caret_idx| self.cached_bracket_tree.active_match_at_cursor(caret_idx));
+                if updated_bracket_match != active_bracket_match {
+                    active_bracket_match = updated_bracket_match;
+                    ui.ctx().request_repaint();
+                }
+
                 let clip_rect = ui.clip_rect();
+
+                // Paint crisp bounding boxes around the clicked bracket and its paired closing/opening bracket
+                if let Some(bm) = active_bracket_match {
+                    let is_matched = bm.partner.is_some();
+                    let (fill_color, stroke_color) = if is_matched {
+                        if is_dark {
+                            (
+                                Color32::from_rgba_unmultiplied(97, 175, 239, 55),
+                                Color32::from_rgb(97, 175, 239),
+                            )
+                        } else {
+                            (
+                                Color32::from_rgba_unmultiplied(40, 120, 220, 50),
+                                Color32::from_rgb(20, 100, 210),
+                            )
+                        }
+                    } else if is_dark {
+                        (
+                            Color32::from_rgba_unmultiplied(235, 87, 87, 70),
+                            Color32::from_rgb(244, 71, 71),
+                        )
+                    } else {
+                        (
+                            Color32::from_rgba_unmultiplied(235, 87, 87, 55),
+                            Color32::from_rgb(210, 30, 30),
+                        )
+                    };
+
+                    let mut target_chars = vec![bm.clicked.char_idx];
+                    if let Some(partner) = bm.partner {
+                        target_chars.push(partner.char_idx);
+                    }
+
+                    for b_char_idx in target_chars {
+                        let c1 = egui::text::CCursor::new(b_char_idx);
+                        let c2 = egui::text::CCursor::new(b_char_idx + 1);
+                        let cur1 = output.galley.from_ccursor(c1);
+                        let cur2 = output.galley.from_ccursor(c2);
+                        let range = egui::text_selection::CursorRange::two(cur1, cur2);
+                        let [min, max] = range.sorted_cursors();
+
+                        if min.rcursor.row < output.galley.rows.len() {
+                            let row = &output.galley.rows[min.rcursor.row];
+                            let left = row.x_offset(min.rcursor.column);
+                            let right = if min.rcursor.row == max.rcursor.row && max.rcursor.column > min.rcursor.column {
+                                row.x_offset(max.rcursor.column)
+                            } else {
+                                left + char_width.max(6.0)
+                            };
+                            let bracket_rect = Rect::from_min_max(
+                                Pos2::new(left, row.min_y()),
+                                Pos2::new(right, row.max_y()),
+                            )
+                            .translate(output.galley_pos.to_vec2());
+
+                            if bracket_rect.intersects(clip_rect) {
+                                ui.painter().rect(
+                                    bracket_rect.expand(1.0),
+                                    2.0,
+                                    fill_color,
+                                    Stroke::new(1.5_f32, stroke_color),
+                                    StrokeKind::Outside,
+                                );
+                            }
+                        }
+                    }
+                }
 
                 // Accurately scroll to target words or lines using actual galley layout geometry
                 if let Some((s, e)) = scroll_target_range {

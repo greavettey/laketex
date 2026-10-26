@@ -50,6 +50,10 @@ pub enum LakeTexError {
     #[error("Dependency error: {0}")]
     Dependency(String),
 
+    /// LaTeX compilation was cancelled by user
+    #[error("Compilation cancelled by user")]
+    Cancelled,
+
     /// Unspecified general error
     #[error("General error: {0}")]
     General(String),

@@ -13,7 +13,80 @@ use crate::engine::pdf_exporter::NativePdfExporter;
 use crate::error::{LakeTexError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
+
+/// A thread-safe cancellation token used to abort running compilations
+/// and terminate unresponsive child compiler processes.
+#[derive(Clone, Default, Debug)]
+pub struct CompileCancellationToken {
+    cancelled: Arc<AtomicBool>,
+    active_pid: Arc<AtomicU32>,
+}
+
+impl CompileCancellationToken {
+    /// Creates a new inactive cancellation token.
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            active_pid: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Returns true if cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Records the operating system process ID (PID) of an active compiler process.
+    pub fn set_pid(&self, pid: u32) {
+        self.active_pid.store(pid, Ordering::SeqCst);
+    }
+
+    /// Clears the recorded process ID once the process completes.
+    pub fn clear_pid(&self) {
+        self.active_pid.store(0, Ordering::SeqCst);
+    }
+
+    /// Cancels the compilation and terminates the active compiler process tree if running.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let pid = self.active_pid.swap(0, Ordering::SeqCst);
+        if pid != 0 {
+            kill_process_tree(pid);
+        }
+    }
+
+    /// Resets the cancellation token so it can be reused for subsequent compilation tasks.
+    pub fn reset(&self) {
+        self.cancelled.store(false, Ordering::SeqCst);
+        self.active_pid.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Forcefully terminates a process and any child processes spawned by it.
+pub fn kill_process_tree(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = crate::create_hidden_command("taskkill")
+            .arg("/F")
+            .arg("/T")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .output();
+    }
+}
 
 /// Supported LaTeX compiler backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +157,8 @@ pub struct CompileOptions {
     pub allow_shell_escape: bool,
     /// Optional unsaved subdocument `(child_file_path, unsaved_content)` to stage via a shadow file
     pub shadow_subdocument: Option<(PathBuf, String)>,
+    /// Optional cancellation token for terminating unresponsive compiler processes
+    pub cancel_token: Option<CompileCancellationToken>,
 }
 
 struct ShadowCleanupGuard(Option<PathBuf>);
@@ -271,6 +346,7 @@ impl CompilerEngine {
             doc_name: doc_name.map(str::to_string),
             allow_shell_escape: false,
             shadow_subdocument: None,
+            cancel_token: None,
         };
         Self::compile_with_options(source, kind, &options)
     }
@@ -330,12 +406,62 @@ impl CompilerEngine {
         out
     }
 
+    /// Executes a compiler [`std::process::Command`] with stdout/stderr capture and cancellation support.
+    pub fn run_cancellable_command(
+        cmd: &mut std::process::Command,
+        cancel_token: Option<&CompileCancellationToken>,
+    ) -> Result<std::process::Output> {
+        if let Some(token) = cancel_token {
+            if token.is_cancelled() {
+                return Err(LakeTexError::Cancelled);
+            }
+        }
+
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let child = cmd.spawn().map_err(|e| {
+            LakeTexError::Engine(format!("Failed to execute compiler: {e}"))
+        })?;
+
+        let pid = child.id();
+        if let Some(token) = cancel_token {
+            token.set_pid(pid);
+            if token.is_cancelled() {
+                token.clear_pid();
+                kill_process_tree(pid);
+                let _ = child.wait_with_output();
+                return Err(LakeTexError::Cancelled);
+            }
+        }
+
+        let output_res = child.wait_with_output();
+
+        if let Some(token) = cancel_token {
+            token.clear_pid();
+            if token.is_cancelled() {
+                return Err(LakeTexError::Cancelled);
+            }
+        }
+
+        output_res.map_err(|e| {
+            LakeTexError::Engine(format!("Failed to read compiler output: {e}"))
+        })
+    }
+
     /// Compiles LaTeX source code to PDF using the specified engine backend and [`CompileOptions`].
     pub fn compile_with_options(
         source: &str,
         kind: EngineKind,
         options: &CompileOptions,
     ) -> Result<CompileResult> {
+        if let Some(token) = options.cancel_token.as_ref() {
+            if token.is_cancelled() {
+                return Err(LakeTexError::Cancelled);
+            }
+        }
+
         let start = Instant::now();
         let work_dir = options.work_dir.as_deref();
         let doc_name = options.doc_name.as_deref();
@@ -557,9 +683,7 @@ impl CompilerEngine {
             EngineKind::Native => unreachable!(),
         }
 
-        let output = cmd.output().map_err(|e| {
-            LakeTexError::Engine(format!("Failed to execute compiler: {e}"))
-        })?;
+        let output = Self::run_cancellable_command(&mut cmd, options.cancel_token.as_ref())?;
 
         let duration_ms = start.elapsed().as_millis();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -629,7 +753,7 @@ impl CompilerEngine {
                 _ => {}
             }
 
-            if let Ok(retry_output) = retry_cmd.output() {
+            if let Ok(retry_output) = Self::run_cancellable_command(&mut retry_cmd, options.cancel_token.as_ref()) {
                 let retry_stdout = String::from_utf8_lossy(&retry_output.stdout).to_string();
                 let retry_stderr = String::from_utf8_lossy(&retry_output.stderr).to_string();
                 let retry_combined = format!("{retry_stdout}\n{retry_stderr}");
@@ -762,7 +886,7 @@ impl CompilerEngine {
                 }
                 _ => {}
             }
-            if let Ok(pass2_out) = pass2_cmd.output() {
+            if let Ok(pass2_out) = Self::run_cancellable_command(&mut pass2_cmd, options.cancel_token.as_ref()) {
                 stdout = String::from_utf8_lossy(&pass2_out.stdout).to_string();
                 stderr = String::from_utf8_lossy(&pass2_out.stderr).to_string();
                 combined_log = format!("{stdout}\n{stderr}");
@@ -1050,5 +1174,52 @@ mod tests {
         );
         assert!(rewritten.contains("\\input{chapters/.laketex_shadow_intro}"));
         assert!(rewritten.contains("\\include{chapters/.laketex_shadow_intro.tex}"));
+    }
+
+    #[test]
+    fn test_cancellation_token_already_cancelled() {
+        let token = CompileCancellationToken::new();
+        token.cancel();
+        assert!(token.is_cancelled());
+
+        #[cfg(windows)]
+        let mut cmd = crate::create_hidden_command("cmd.exe");
+        #[cfg(not(windows))]
+        let mut cmd = std::process::Command::new("sh");
+        #[cfg(windows)]
+        cmd.arg("/c").arg("echo hello");
+        #[cfg(not(windows))]
+        cmd.arg("-c").arg("echo hello");
+
+        let res = CompilerEngine::run_cancellable_command(&mut cmd, Some(&token));
+        assert!(matches!(res, Err(LakeTexError::Cancelled)));
+    }
+
+    #[test]
+    fn test_cancellation_token_cancels_running_process() {
+        let token = CompileCancellationToken::new();
+        let token_clone = token.clone();
+
+        #[cfg(windows)]
+        let mut cmd = crate::create_hidden_command("ping.exe");
+        #[cfg(not(windows))]
+        let mut cmd = std::process::Command::new("sleep");
+        #[cfg(windows)]
+        cmd.arg("-n").arg("10").arg("127.0.0.1");
+        #[cfg(not(windows))]
+        cmd.arg("10");
+
+        let start = Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            token_clone.cancel();
+        });
+
+        let res = CompilerEngine::run_cancellable_command(&mut cmd, Some(&token));
+        let elapsed = start.elapsed();
+
+        assert!(matches!(res, Err(LakeTexError::Cancelled)));
+        // Should terminate in well under 2 seconds rather than the 10-second ping/sleep
+        assert!(elapsed < std::time::Duration::from_secs(3));
     }
 }

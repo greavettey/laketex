@@ -134,6 +134,22 @@ The theming parser maps simple key names to UI components:
 \texttt{error} & \texttt{err} & Diagnostic error indicators \\
 \texttt{warning} & \texttt{warn} & Diagnostic warning indicators \\
 \texttt{success} & \texttt{ok} & Successful compilation badges \\
+\midrule
+\texttt{syntax\_command} & \texttt{command} & Control commands (\textbackslash begin, \textbackslash section, \textbackslash textbf) \\
+\texttt{syntax\_argument} & \texttt{argument} & Command and environment arguments (\{itemize\}, \{article\}) \\
+\texttt{syntax\_package} & \texttt{syntax\_package\_name} & Imported packages in \textbackslash usepackage\{amsmath, graphicx\} \\
+\texttt{syntax\_tag\_property} & \texttt{syntax\_property} & Tag properties (leftmargin, label in \textbackslash begin\{itemize\}[...]) \\
+\texttt{syntax\_property\_number} & \texttt{syntax\_number} & Integer and dimension values within tags (0.15in, 12pt) \\
+\texttt{syntax\_property\_boolean} & \texttt{syntax\_boolean} & Boolean values within tags (true, false) \\
+\texttt{syntax\_property\_value} & \texttt{syntax\_value} & General string values of properties within tags \\
+\texttt{syntax\_math} & \texttt{math} & Inline math blocks (\$ ... \$) \\
+\texttt{syntax\_math\_block} & \texttt{math\_block} & Display math blocks (\$\$ ... \$\$) \\
+\texttt{syntax\_brace} & \texttt{brace} & Structural curly braces (\{ and \}) \\
+\texttt{syntax\_bracket} & \texttt{bracket} & Optional argument brackets ([ and ]) \\
+\texttt{syntax\_special} & \texttt{special} & Special control characters (\&, \_, \^{}, \textasciitilde, \#) \\
+\texttt{syntax\_comment} & \texttt{comment} & Comments (\% ...) \\
+\texttt{syntax\_text} & \texttt{text} & Regular prose text \\
+\texttt{bracket\_level\_0..3} & -- & Depth-aware rainbow bracket levels 0 through 3 \\
 \bottomrule
 \end{tabular}
 \caption{Supported color keys in custom theme files.}

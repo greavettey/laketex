@@ -89,7 +89,7 @@ impl Sidebar {
                 ui.set_min_height(crate::ui::PANEL_HEADER_HEIGHT);
                 ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Outline, t!("sidebar.outline"));
-                ui.selectable_value(&mut self.current_tab, SidebarTab::Files, format!("📁 {}", t!("sidebar.files")));
+                ui.selectable_value(&mut self.current_tab, SidebarTab::Files, t!("sidebar.files"));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Packages, t!("sidebar.packages"));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Snippets, t!("sidebar.snippets"));
                 ui.selectable_value(&mut self.current_tab, SidebarTab::Metrics, t!("sidebar.metrics"));

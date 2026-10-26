@@ -19,6 +19,8 @@ use egui::{vec2, Color32, RichText, Ui};
 pub struct ToolbarAction {
     /// True if the user pressed the Compile button or shortcut
     pub compile_requested: bool,
+    /// True if the user clicked the Cancel Compile button to abort an unresponsive compilation
+    pub cancel_compile_requested: bool,
     /// True if the user clicked New Document
     pub new_requested: bool,
     /// True if the user clicked Open File
@@ -118,7 +120,7 @@ impl Toolbar {
                 let compile_btn_text = if is_compiling {
                     RichText::new(t!("toolbar.compiling")).color(Color32::from_rgb(242, 201, 76))
                 } else {
-                    RichText::new(format!("{} (Ctrl+B)", t!("toolbar.compile")))
+                    RichText::new(format!("{}", t!("toolbar.compile")))
                         .strong()
                         .color(Color32::WHITE)
                 };
@@ -129,8 +131,30 @@ impl Toolbar {
                     Color32::from_rgb(34, 110, 60)
                 });
 
-                if ui.add_enabled(!is_compiling, compile_btn).clicked() {
+                let compile_response = ui.add_enabled(!is_compiling, compile_btn);
+                if compile_response.clicked() {
                     action.compile_requested = true;
+                }
+                if is_compiling {
+                    compile_response.on_hover_text("Compilation in progress... Click 'Cancel' or press Escape to abort.");
+                }
+
+                // Cancel Compile button (prominently displayed when compilation is active or frozen)
+                if is_compiling {
+                    let cancel_btn = egui::Button::new(
+                        RichText::new(t!("toolbar.cancel_compile"))
+                            .strong()
+                            .color(Color32::from_rgb(255, 220, 220)),
+                    )
+                    .fill(Color32::from_rgb(160, 40, 40));
+
+                    if ui
+                        .add(cancel_btn)
+                        .on_hover_text("Cancel compilation and terminate unresponsive compiler process (Escape)")
+                        .clicked()
+                    {
+                        action.cancel_compile_requested = true;
+                    }
                 }
 
                 ui.checkbox(auto_compile, "Auto");
@@ -213,7 +237,7 @@ impl Toolbar {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button(format!("{} (Ctrl+,)", t!("toolbar.settings")))
+                        .button(format!("{}", t!("toolbar.settings")))
                         .on_hover_text("Open Settings & Preferences (Theme, Shortcuts, PDF Defaults)")
                         .clicked()
                     {

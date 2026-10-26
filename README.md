@@ -84,9 +84,11 @@ All benchmarks were measured on a standard developer workstation (AMD Ryzen 7, 3
 
 ### Startup Time
 
-| Application | Cold Startup Time | Runtime Architecture | Installation Overhead |
+| Application / Mode | Cold Startup Time | Runtime Architecture | Installation Overhead |
 | :--- | :--- | :--- | :--- |
-| **Laketex** | **< 0.08 s** | Native Rust + Immediate-Mode GPU UI | Single ~33.4 MB binary |
+| **Laketex (CLI Execution)** | **~12 ms** (~75–95 ms via PowerShell wrapper) | Native Rust In-Process Dispatch | Zero Setup (Single standalone binary) |
+| **Laketex (Headless Daemon)**| **~209 ms** | Background HTTP REST Microservice | Zero Setup |
+| **Laketex (Desktop Studio GUI)** | **~90–140 ms** (Init: **< 10 ms**) | Native Rust + Immediate-Mode GPU UI (instant first frame & async PDFium warmup) | Single 34.1 MiB binary |
 | TeXstudio | 3.20 s | C++ / Qt GUI | ~180 MB + 5–8 GB TeX Live |
 | VS Code + LaTeX Workshop | 4.50 s | Electron / TypeScript | ~520 MB + 5–8 GB TeX Live |
 | Overleaf | 1.80 s – 3.50 s | Web Browser / Remote SaaS | Browser + Account Login |
@@ -95,26 +97,28 @@ All benchmarks were measured on a standard developer workstation (AMD Ryzen 7, 3
 
 | Engine / Pipeline | Average Build Time | Execution Mechanism | Network Dependency |
 | :--- | :--- | :--- | :--- |
-| **Laketex Native (Pure Rust)** | **12 ms – 65 ms** | In-Process Memory Pipeline | 100% Offline (Zero Network) |
-| **Laketex Bundled Tectonic** | **350 ms – 680 ms** | Bundled Executable + Local CTAN Cache | Auto-downloads on first import |
+| **Laketex Native (Draft Layout)** | **< 5 ms** | In-Process Memory AST & Vector Pipeline | 100% Offline (Zero Network) |
+| **Laketex Native (PDF Export)** | **280 ms – 350 ms** (small/med), **2.48 s** (15-page doc) | Vector PDF Export via `printpdf` | 100% Offline (Zero Network) |
+| **Laketex Bundled Tectonic** | **797 ms – 1,649 ms** (small/med), **2.58 s** (large doc) | Bundled Executable + Local CTAN Cache | Auto-downloads on first import |
 | External pdfLaTeX (TeX Live) | 850 ms – 1,450 ms | Spawns Subprocess | Requires Pre-installed Distro |
 | External XeLaTeX (TeX Live) | 1,200 ms – 2,200 ms | Spawns Subprocess | Requires Pre-installed Distro |
 
 ### Memory Footprint
 
-| State | Laketex | TeXstudio | VS Code + LaTeX Workshop |
+| Mode / State | Idle | Active / Typing | Peak Compilation Load |
 | :--- | :--- | :--- | :--- |
-| **Idle (Document Open)** | **~38 MB** | ~180 MB | ~680 MB |
-| **Active Typing (Live Preview)**| **~52 MB** | ~210 MB | ~740 MB |
-| **Peak Compilation Load** | **~68 MB** | ~280 MB | ~890 MB |
+| **Laketex Headless Daemon** | **8.9 MB** | **15.2 MB** | **15.2 MB** |
+| **Laketex Desktop Studio GUI** | **123 MB** | **198 MB** | **218 MB** |
+| TeXstudio | ~180 MB | ~210 MB | ~280 MB |
+| VS Code + LaTeX Workshop | ~680 MB | ~740 MB | ~890 MB |
 
 ### Disk Footprint
 
 | Component | Laketex | Traditional TeX Setup (TeX Live) |
 | :--- | :--- | :--- |
-| **Editor Binary** | ~33.4 MB (Includes PDFium & Tectonic) | ~180 MB (TeXstudio only) |
+| **Editor Binary** | **34.1 MiB** (~35.8 MB decimal, includes PDFium & Tectonic) | ~180 MB (TeXstudio only) |
 | **TeX Distribution** | 0 MB (Embedded in binary) | 5,000 MB – 8,000 MB (TeX Live full) |
-| **Total Disk Requirement** | **~33.4 MB** | **5,200 MB – 8,200 MB** |
+| **Total Disk Requirement** | **34.1 MiB** (~35.8 MB decimal) | **5,200 MB – 8,200 MB** |
 
 ### Native Engine Visual Parity Metrics
 
@@ -122,9 +126,9 @@ Using our built-in automated parity harness (`laketex compare`), we benchmarked 
 
 | Metric | Result | Interpretation |
 | :--- | :--- | :--- |
-| **Visual Match Percentage** | **92.35%** | High structural and text alignment parity |
-| **Mean Squared Error (MSE)** | **0.021** | Minimal pixel deviation on standard text |
-| **Peak Signal-to-Noise Ratio (PSNR)**| **26.8 dB** | Excellent visual fidelity for draft viewing |
+| **Visual Match Percentage** | **~89.8% – 91.1%** | High structural and text alignment parity |
+| **Mean Squared Error (MSE)** | **0.028 – 0.035** | Minimal normalized pixel deviation on standard text |
+| **Peak Signal-to-Noise Ratio (PSNR)**| **14.5 – 15.4 dB** | High visual fidelity for draft viewing |
 
 ---
 
@@ -166,10 +170,36 @@ Over the course of developing Laketex, we built a comprehensive set of features 
 - Choose between built-in palettes: **Dracula (JetBrains)**, **Academic Dark**, **Slate Minimal**, **Nord Frost**, and **Paper White**.
 - Fully user-customizable: drop simple `.json` or `.yaml` files into a `themes/` folder alongside the executable. Laketex hot-reloads them instantly without restarting.
 
+### Live GUI Stateful REST API (`--with-api --with-state`)
+- Launch with `laketex --with-api --with-state --api-port 3030` to enable real-time bidirectional synchronization between REST API clients (including autonomous AI coding agents) and the live desktop GUI.
+- Programmatic edits delivered via `POST /api/document` (full replacement, surgical line ranges, or search-and-replace patches) immediately reflect in the open editor buffer and recompile the preview.
+- Viewport and UI state can be manipulated via `POST /api/navigate` (jumping caret line, changing preview page, adjusting zoom, switching view mode, or opening specific drawer tabs).
+
+### Machine-Readable Agent API Specification (`laketex api-spec`)
+- Comprehensive, self-describing JSON specification of all REST endpoints, schemas, security invariants, and recommended agent workflows.
+- Run `laketex api-spec` (or `laketex api-spec --compact`) from the command line to emit the schema without starting the network server.
+- When running, query `GET /api/spec` or `GET /api/help` for full programmatic introspection.
+
+### In-Memory Session Audit Log (`DrawerTab::AuditLog`)
+- Virtualized, RAM-only event log in the bottom Console Drawer tracking both user edits and API interactions with distinct color-coded badges (`[USER]`, `[API MUTATION]`, `[API READ]`).
+- Includes real-time search filtering, actor category toggles, click-to-jump line buttons, auto-scroll locking, and instant clearing without persisting telemetry to disk.
+
+### Bracket Tree-Aware Highlighting & Paired Delimiter Jump
+- Resilient bracket tree tokenizer (`document::lexer::BracketTree`) that tracks nesting depths across nested braces, brackets, and parentheses while ignoring comments and escaped delimiters.
+- Interactive `{…}` badge in the editor header displays the matching paired delimiter line and jumps the caret directly to it on click.
+
+### Toolbar Cancel Compilation Button with Process Tree Killing
+- Prominent Cancel compilation button in the top toolbar (and `Escape` keyboard shortcut) backed by `CompileCancellationToken`.
+- Instantly aborts long-running or frozen compiler tasks by terminating the entire operating system process tree cleanly.
+
+### Unsaved Changes Confirmation Modal with Discard Changes & Exit
+- Intercepts application close (`[X]`), `New`, `Open`, and `Load Manual` whenever the document is dirty.
+- Working `Save and Continue`, `Discard Changes` (resets dirty status and cleanly exits or transitions via `allow_close`), and `Cancel`.
+
 ### Headless CLI and Embedded REST API
 - Run Laketex headlessly in continuous integration pipelines, automated build scripts, or agentic coding workflows.
-- Built-in commands: `compile`, `check`, `debug`, `packages`, `compare`, and `serve`.
-- The embedded REST daemon provides JSON endpoints (`/api/compile`, `/api/check`, `/api/outline`, `/api/debug`) for programmatic document generation.
+- Built-in commands: `compile`, `check`, `debug`, `packages`, `compare`, `api-spec`, `docs`, and `serve`.
+- Safe printing helpers prevent `BrokenPipe` panics when piping stdout into terminal filters or wrappers.
 
 ---
 
@@ -208,15 +238,18 @@ laketex my_paper.tex
 
 # Launch with the embedded REST API enabled on port 3030
 laketex --with-api --api-port 3030
+
+# Launch with Live Stateful REST API synchronization enabled
+laketex --with-api --with-state --api-port 3030
 ```
 
 ### 2. Command-Line Operations
 ```bash
-# Compile LaTeX to PDF directly from the terminal (defaults to Tectonic)
+# Compile LaTeX to PDF directly from the terminal (defaults to Native pure-Rust)
 laketex compile document.tex -o output.pdf
 
-# Compile using the instant pure-Rust engine
-laketex compile document.tex --engine native -o output.pdf
+# Compile using the bundled Tectonic engine
+laketex compile document.tex --engine tectonic -o output.pdf
 
 # Run syntax linting and check for errors
 laketex check document.tex
@@ -227,9 +260,25 @@ laketex debug document.tex --format json
 # Visually compare Tectonic vs Native rendering and generate diff metrics
 laketex compare document.tex --output-dir ./parity_report
 
+# Emit the full machine-readable AI agent JSON specification
+laketex api-spec
+
+# List and export built-in offline LaTeX manuals
+laketex docs --list
+laketex docs --export ./docs
+
 # Start the headless HTTP REST API daemon
 laketex serve --port 3030
 ```
+
+> **Windows CLI Shell Blocking Note**:  
+> Because `laketex.exe` is compiled as a Windows GUI subsystem application to prevent an unwanted console window popup when launched as a desktop app, Windows shells (PowerShell and `cmd.exe`) detach the process immediately by default.  
+> To wait synchronously for command completion and capture terminal output in PowerShell:
+> ```powershell
+> .\laketex.exe compile document.tex --engine native -o output.pdf | Out-Host
+> # Or using Start-Process:
+> Start-Process -Wait .\laketex.exe -ArgumentList "compile document.tex --engine native -o output.pdf"
+> ```
 
 ### 3. Keyboard Shortcuts Reference
 
@@ -282,7 +331,7 @@ Laketex stores its configuration in a human-readable JSON file (`laketex_config.
 ```
 
 ### Custom Themes Folder (`themes/`)
-Laketex automatically loads any `.json` or `.yaml` theme files located in a `themes/` folder placed alongside `laketex.exe` or in the working directory.
+Laketex automatically loads any `.json` or `.yaml` theme files located in a `themes/` folder placed alongside `laketex.exe` or in the working directory. Themes support fine-grained semantic syntax highlighting keys (`syntax_command`, `syntax_argument`, `syntax_package`, `syntax_tag_property`, `syntax_property_number`, `syntax_property_boolean`, `syntax_property_value`, `syntax_math`, `syntax_math_block`, `syntax_brace`, `syntax_bracket`, `syntax_special`, `syntax_comment`, `syntax_text`).
 
 Example theme file (`themes/monokai_pro.json`):
 ```json
@@ -300,7 +349,17 @@ Example theme file (`themes/monokai_pro.json`):
     "border": "#363437",
     "error": "#ff6188",
     "warning": "#fc9867",
-    "success": "#a9dc76"
+    "success": "#a9dc76",
+    "syntax_command": "#78dce8",
+    "syntax_argument": "#a9dc76",
+    "syntax_package": "#ffd866",
+    "syntax_tag_property": "#ff6188",
+    "syntax_property_number": "#ab9df2",
+    "syntax_property_boolean": "#ab9df2",
+    "syntax_property_value": "#fc9867",
+    "syntax_math": "#ffd866",
+    "syntax_comment": "#727072",
+    "syntax_text": "#fcfcfa"
   }
 }
 ```

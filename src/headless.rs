@@ -7,4 +7,6 @@ pub mod cli;
 pub mod server;
 
 pub use cli::CliArgs;
-pub use server::HeadlessServer;
+pub use server::{
+    DocumentEditOperation, HeadlessServer, LiveEditorSnapshot, SharedAppState, StatefulUiCommand,
+};

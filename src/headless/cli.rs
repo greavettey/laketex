@@ -10,12 +10,41 @@ use crate::headless::server::HeadlessServer;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Helper macro to write formatted text to stdout, catching and ignoring BrokenPipe errors
+/// (e.g. when piping output into PowerShell Measure-Command, head, or Select-Object).
+macro_rules! safe_println {
+    () => {
+        safe_print!("\n");
+    };
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        if let Err(e) = writeln!(std::io::stdout(), $($arg)*) {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                eprintln!("Warning: failed writing to stdout: {e}");
+            }
+        }
+    }};
+}
+
+/// Helper macro to write text to stdout without newline, catching and ignoring BrokenPipe errors.
+macro_rules! safe_print {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        if let Err(e) = write!(std::io::stdout(), $($arg)*) {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                eprintln!("Warning: failed writing to stdout: {e}");
+            }
+        }
+    }};
+}
+
 /// Command line arguments parsed by LakeTex.
 #[derive(Parser, Debug)]
 #[command(
     name = "laketex",
     about = "Laketex: Lightweight, portable LaTeX editor and viewer in Rust",
-    version
+    version,
+    after_help = "AI AGENT & API SPECIFICATION:\n  Run `laketex api-spec` (or `laketex api-spec --compact`) to emit the complete\n  machine-readable JSON specification of all headless & stateful REST API endpoints,\n  request/response schemas, security invariants, and recommended agent workflows.\n  When the REST API server is running, query `GET /api/spec` or `GET /api/help`.\n\nLIVE AGENTIC GUI CO-EDITING:\n  Launch with `laketex --with-api --with-state` to synchronize REST API calls\n  with the live GUI editor, PDF/vector viewer, and Console Drawer Audit Log in real time."
 )]
 pub struct CliArgs {
     /// Optional headless CLI subcommand to execute instead of launching the desktop GUI.
@@ -28,6 +57,10 @@ pub struct CliArgs {
     /// Run headless API server in the background alongside the GUI
     #[arg(long, default_value_t = false)]
     pub with_api: bool,
+
+    /// Enable stateful REST API mode (syncs API calls with the live GUI editor and viewer in real time; requires --with-api)
+    #[arg(long, default_value_t = false)]
+    pub with_state: bool,
 
     /// API port if background server is enabled
     #[arg(long, default_value_t = 3030)]
@@ -170,6 +203,22 @@ pub enum Commands {
         #[arg(short, long)]
         list: bool,
     },
+
+    /// Emit a complete machine-readable JSON specification of all REST API endpoints, schemas, and stateful/stateless agent workflows
+    #[command(visible_aliases = ["agent-spec", "schema", "endpoints"])]
+    ApiSpec {
+        /// Target API port to embed in example URLs
+        #[arg(short, long, default_value_t = 3030)]
+        port: u16,
+
+        /// Emit compact single-line JSON instead of pretty-printed JSON
+        #[arg(short, long, default_value_t = false)]
+        compact: bool,
+
+        /// Optional file path to write the JSON specification to
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 impl CliArgs {
@@ -198,11 +247,11 @@ impl CliArgs {
                     let missing = PackageManager::detect_dependencies(&source);
                     for dep in missing.into_iter().filter(|d| !d.installed) {
                         let pkg = dep.pip_package.as_deref().unwrap_or(&dep.name);
-                        println!("Installing missing dependency '{}' via pip...", pkg);
+                        safe_println!("Installing missing dependency '{}' via pip...", pkg);
                         if let Err(e) = PackageManager::install_dependency(pkg, true) {
                             eprintln!("Warning: Failed to install dependency {}: {}", pkg, e);
                         } else {
-                            println!("✓ Installed '{}'", pkg);
+                            safe_println!("✓ Installed '{}'", pkg);
                         }
                     }
                 }
@@ -215,18 +264,19 @@ impl CliArgs {
                     _ => EngineKind::Native, // Default to Native Pure-Rust!
                 };
 
-                println!("Compiling {} with {}...", input.display(), engine_kind.display_name());
+                safe_println!("Compiling {} with {}...", input.display(), engine_kind.display_name());
                 let work_dir = input.parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf());
                 let options = crate::compiler::CompileOptions {
                     work_dir,
                     doc_name: input.file_name().and_then(|s| s.to_str()).map(str::to_string),
                     allow_shell_escape,
                     shadow_subdocument: None,
+                    cancel_token: None,
                 };
                 let result = CompilerEngine::compile_with_options(&source, engine_kind, &options)?;
 
                 for diag in &result.diagnostics {
-                    println!(
+                    safe_println!(
                         "[{:?}] line {}: {}",
                         diag.severity,
                         diag.line.map(|l| l.to_string()).unwrap_or_else(|| "?".to_string()),
@@ -249,14 +299,14 @@ impl CliArgs {
                         report.to_markdown()
                     };
                     std::fs::write(&log_path, content)?;
-                    println!("📄 Exported contextual error log to {}", log_path.display());
+                    safe_println!("📄 Exported contextual error log to {}", log_path.display());
                 }
 
                 if result.success {
                     let out_path = output.unwrap_or_else(|| input.with_extension("pdf"));
                     if let Some(bytes) = result.pdf_bytes {
                         std::fs::write(&out_path, bytes)?;
-                        println!("✓ Successfully compiled to {} in {} ms", out_path.display(), result.duration_ms);
+                        safe_println!("✓ Successfully compiled to {} in {} ms", out_path.display(), result.duration_ms);
                     }
                 } else {
                     eprintln!("✗ Compilation failed in {} ms", result.duration_ms);
@@ -287,38 +337,38 @@ impl CliArgs {
                         report.to_markdown()
                     };
                     std::fs::write(&log_path, content)?;
-                    println!("📄 Exported contextual error log to {}", log_path.display());
+                    safe_println!("📄 Exported contextual error log to {}", log_path.display());
                 }
 
                 if format.to_lowercase() == "json" {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
+                    safe_println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
-                    println!("Diagnostics for {}:", input.display());
+                    safe_println!("Diagnostics for {}:", input.display());
                     for diag in &report.diagnostics {
-                        println!(
+                        safe_println!(
                             "\n[{:?}] {} (Line {})",
                             diag.severity,
                             diag.message,
                             diag.line.map(|l| l.to_string()).unwrap_or_else(|| "?".to_string())
                         );
-                        println!("  Activity/Intent: {}", diag.environment_intent);
+                        safe_println!("  Activity/Intent: {}", diag.environment_intent);
                         if !diag.surrounding_context.is_empty() {
                             for ctx in &diag.surrounding_context {
                                 let m = if ctx.is_target { ">>>" } else { "   " };
-                                println!("  {} {:>4} | {}", m, ctx.line_number, ctx.content);
+                                safe_println!("  {} {:>4} | {}", m, ctx.line_number, ctx.content);
                             }
                         }
-                        println!("  💡 Suggested Fix: {}", diag.suggested_fix);
+                        safe_println!("  💡 Suggested Fix: {}", diag.suggested_fix);
                     }
                     if report.diagnostics.is_empty() {
-                        println!("  ✓ No errors or warnings found!");
+                        safe_println!("  ✓ No errors or warnings found!");
                     }
                 }
             }
             Commands::Outline { input } => {
                 let source = std::fs::read_to_string(&input)?;
                 let items = OutlineParser::parse(&source);
-                println!("{}", serde_json::to_string_pretty(&items)?);
+                safe_println!("{}", serde_json::to_string_pretty(&items)?);
             }
             Commands::Packages {
                 input,
@@ -331,16 +381,16 @@ impl CliArgs {
                 let dependencies = PackageManager::detect_dependencies(&source);
 
                 if !check_deps && !install_deps {
-                    println!("{}", serde_json::to_string_pretty(&packages)?);
+                    safe_println!("{}", serde_json::to_string_pretty(&packages)?);
                     return Ok(());
                 }
 
-                println!("======================================================================");
-                println!("📦 LAKETEX PACKAGE DEPENDENCY AUDIT: {}", input.display());
-                println!("======================================================================");
+                safe_println!("======================================================================");
+                safe_println!("📦 LAKETEX PACKAGE DEPENDENCY AUDIT: {}", input.display());
+                safe_println!("======================================================================");
 
                 let py_env = PackageManager::check_python_environment();
-                println!("System Environment:");
+                safe_println!("System Environment:");
                 if py_env.python_available {
                     let ver = py_env.python_version.as_deref().unwrap_or("unknown");
                     let path = py_env.python_path.as_deref().unwrap_or("python");
@@ -350,50 +400,50 @@ impl CliArgs {
                     } else {
                         String::new()
                     };
-                    println!("  ✓ Python: {} ({}){}", ver, path, conda_tag);
+                    safe_println!("  ✓ Python: {} ({}){}", ver, path, conda_tag);
                     if py_env.pip_available {
-                        println!("  ✓ pip: Available");
+                        safe_println!("  ✓ pip: Available");
                     } else if py_env.conda_cli_path.is_some() {
-                        println!("  ✓ conda: Available (conda-forge fallback ready)");
+                        safe_println!("  ✓ conda: Available (conda-forge fallback ready)");
                     } else {
-                        println!("  ✗ pip / conda: Missing");
+                        safe_println!("  ✗ pip / conda: Missing");
                     }
                 } else {
-                    println!("  ✗ Python: Not detected on system PATH");
+                    safe_println!("  ✗ Python: Not detected on system PATH");
                 }
-                println!("----------------------------------------------------------------------");
+                safe_println!("----------------------------------------------------------------------");
 
                 if dependencies.is_empty() {
-                    println!("✓ None of the declared packages require external host tools.");
+                    safe_println!("✓ None of the declared packages require external host tools.");
                 } else {
-                    println!("Detected External Tool Dependencies ({}):", dependencies.len());
+                    safe_println!("Detected External Tool Dependencies ({}):", dependencies.len());
                     for (i, dep) in dependencies.iter().enumerate() {
                         let status_label = if dep.installed {
                             format!("✓ Installed ({})", dep.binary_path.as_deref().unwrap_or(&dep.binary_name))
                         } else {
                             "✗ MISSING".to_string()
                         };
-                        println!(
+                        safe_println!(
                             "[{}] Package '{}' -> Dependency '{}' (binary: '{}')",
                             i + 1,
                             dep.latex_package,
                             dep.name,
                             dep.binary_name
                         );
-                        println!("    Status:          {}", status_label);
-                        println!("    Description:     {}", dep.description);
-                        println!("    Install Command: {}", dep.install_command);
+                        safe_println!("    Status:          {}", status_label);
+                        safe_println!("    Description:     {}", dep.description);
+                        safe_println!("    Install Command: {}", dep.install_command);
                     }
                 }
 
                 if install_deps {
-                    println!("----------------------------------------------------------------------");
+                    safe_println!("----------------------------------------------------------------------");
                     let missing_deps: Vec<_> = dependencies
                         .into_iter()
                         .filter(|d| !d.installed)
                         .collect();
                     if missing_deps.is_empty() {
-                        println!("✓ All required external tool dependencies are already installed!");
+                        safe_println!("✓ All required external tool dependencies are already installed!");
                     } else {
                         for dep in missing_deps {
                             let pkg_to_install = dep
@@ -403,11 +453,11 @@ impl CliArgs {
                             let mut consented = yes;
 
                             if !consented {
-                                print!(
+                                safe_print!(
                                     "\nLaTeX package '{}' requires '{}'. Do you consent to installing it via '{}'? [y/N]: ",
                                     dep.latex_package, dep.name, dep.install_command
                                 );
-                                std::io::Write::flush(&mut std::io::stdout())?;
+                                let _ = std::io::Write::flush(&mut std::io::stdout());
                                 let mut input_line = String::new();
                                 std::io::stdin().read_line(&mut input_line)?;
                                 let trimmed = input_line.trim().to_lowercase();
@@ -417,21 +467,21 @@ impl CliArgs {
                             }
 
                             if consented {
-                                println!("Installing '{}' via pip...", pkg_to_install);
+                                safe_println!("Installing '{}' via pip...", pkg_to_install);
                                 match PackageManager::install_dependency(pkg_to_install, true) {
-                                    Ok(msg) => println!("✓ {}", msg.trim()),
+                                    Ok(msg) => safe_println!("✓ {}", msg.trim()),
                                     Err(e) => {
                                         eprintln!("✗ Failed to install {}: {}", pkg_to_install, e)
                                     }
                                 }
                             } else {
-                                println!("Installation skipped: user consent was not granted.");
+                                safe_println!("Installation skipped: user consent was not granted.");
                             }
                         }
                     }
                 }
 
-                println!("======================================================================");
+                safe_println!("======================================================================");
             }
             Commands::Compare {
                 input,
@@ -441,7 +491,7 @@ impl CliArgs {
             } => {
                 use crate::viewer::parity::VisualParityComparator;
                 let source = std::fs::read_to_string(&input)?;
-                println!(
+                safe_println!(
                     "Comparing Tectonic vs Native Engine visual rendering for {} (page {})...",
                     input.display(),
                     page + 1
@@ -456,40 +506,40 @@ impl CliArgs {
                     work_dir,
                 )?;
 
-                println!("========================================================");
-                println!("           LAKETEX VISUAL PARITY BENCHMARK REPORT       ");
-                println!("========================================================");
-                println!("Document:                 {}", report.document_name);
-                println!("Page Analyzed:            Page {}", report.page_number);
-                println!(
+                safe_println!("========================================================");
+                safe_println!("           LAKETEX VISUAL PARITY BENCHMARK REPORT       ");
+                safe_println!("========================================================");
+                safe_println!("Document:                 {}", report.document_name);
+                safe_println!("Page Analyzed:            Page {}", report.page_number);
+                safe_println!(
                     "Canvas Dimensions:        {} x {} px",
                     report.rendered_width_px, report.rendered_height_px
                 );
-                println!("Total Pixels Evaluated:   {}", report.total_pixels);
-                println!(
+                safe_println!("Total Pixels Evaluated:   {}", report.total_pixels);
+                safe_println!(
                     "Matching Pixels:          {} ({:.2}%)",
                     report.matching_pixels, report.visual_parity_score
                 );
-                println!("Mismatch Pixels:          {}", report.mismatch_pixels);
-                println!("Mean Squared Error (MSE): {:.2}", report.mean_squared_error);
-                println!(
+                safe_println!("Mismatch Pixels:          {}", report.mismatch_pixels);
+                safe_println!("Mean Squared Error (MSE): {:.2}", report.mean_squared_error);
+                safe_println!(
                     "PSNR (Fidelity):          {:.2} dB",
                     report.peak_signal_to_noise_ratio
                 );
-                println!(
+                safe_println!(
                     "Tectonic Compilation:     {} ms ({} bytes)",
                     report.tectonic_compile_ms, report.tectonic_pdf_bytes
                 );
-                println!(
+                safe_println!(
                     "Native Rust Compilation:  {} ms ({} bytes)",
                     report.native_compile_ms, report.native_pdf_bytes
                 );
-                println!("Output Artifacts Saved:   {}", output_dir.display());
-                println!("  -> {}/tectonic_render.png", output_dir.display());
-                println!("  -> {}/native_render.png", output_dir.display());
-                println!("  -> {}/diff_comparison.png", output_dir.display());
-                println!("  -> {}/visual_parity_report.json", output_dir.display());
-                println!("========================================================");
+                safe_println!("Output Artifacts Saved:   {}", output_dir.display());
+                safe_println!("  -> {}/tectonic_render.png", output_dir.display());
+                safe_println!("  -> {}/native_render.png", output_dir.display());
+                safe_println!("  -> {}/diff_comparison.png", output_dir.display());
+                safe_println!("  -> {}/visual_parity_report.json", output_dir.display());
+                safe_println!("========================================================");
             }
             Commands::Debug {
                 input,
@@ -522,9 +572,9 @@ impl CliArgs {
                 }
 
                 if format.to_lowercase() == "json" {
-                    println!("{}", report.to_json());
+                    safe_println!("{}", report.to_json());
                 } else {
-                    println!("{}", report.to_text_summary());
+                    safe_println!("{}", report.to_text_summary());
                 }
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
@@ -541,21 +591,21 @@ impl CliArgs {
             } => {
                 let docs = crate::document::BuiltinDoc::all();
                 if list || (!print && export.is_none()) {
-                    println!("============================================================");
-                    println!("  Laketex Built-in LaTeX Documentation Library");
-                    println!("============================================================");
-                    println!();
+                    safe_println!("============================================================");
+                    safe_println!("  Laketex Built-in LaTeX Documentation Library");
+                    safe_println!("============================================================");
+                    safe_println!();
                     for d in docs {
-                        println!("  * [{:?}] {} ({})", d.kind, d.title, d.filename);
-                        println!("    Summary: {}", d.description);
-                        println!("    Lines:   {}", d.content.lines().count());
-                        println!();
+                        safe_println!("  * [{:?}] {} ({})", d.kind, d.title, d.filename);
+                        safe_println!("    Summary: {}", d.description);
+                        safe_println!("    Lines:   {}", d.content.lines().count());
+                        safe_println!();
                     }
-                    println!("CLI Usage Examples:");
-                    println!("  laketex docs --list                      # List available docs");
-                    println!("  laketex docs --print --doc manual        # Print manual to stdout");
-                    println!("  laketex docs --export ./docs             # Export all docs to folder");
-                    println!("  laketex docs --export ./docs --doc theming");
+                    safe_println!("CLI Usage Examples:");
+                    safe_println!("  laketex docs --list                      # List available docs");
+                    safe_println!("  laketex docs --print --doc manual        # Print manual to stdout");
+                    safe_println!("  laketex docs --export ./docs             # Export all docs to folder");
+                    safe_println!("  laketex docs --export ./docs --doc theming");
                     if !print && export.is_none() {
                         return Ok(());
                     }
@@ -582,7 +632,7 @@ impl CliArgs {
                         for d in to_export {
                             let out_path = target_dir.join(d.filename);
                             std::fs::write(&out_path, d.content)?;
-                            println!("✓ Exported {} -> {}", d.filename, out_path.display());
+                            safe_println!("✓ Exported {} -> {}", d.filename, out_path.display());
                         }
                     }
                 }
@@ -595,13 +645,31 @@ impl CliArgs {
                     });
 
                     if let Some(d) = matching {
-                        print!("{}", d.content);
+                        safe_print!("{}", d.content);
                     } else {
                         eprintln!(
                             "Document '{}' not found. Available: manual, theming, api, architecture",
                             doc
                         );
                     }
+                }
+            }
+            Commands::ApiSpec {
+                port,
+                compact,
+                output,
+            } => {
+                let spec = HeadlessServer::agent_api_spec_json(port, None, None);
+                let json_out = if compact {
+                    serde_json::to_string(&spec)?
+                } else {
+                    serde_json::to_string_pretty(&spec)?
+                };
+                if let Some(out_path) = output {
+                    std::fs::write(&out_path, &json_out)?;
+                    eprintln!("Exported agent API specification to {}", out_path.display());
+                } else {
+                    safe_println!("{json_out}");
                 }
             }
         }

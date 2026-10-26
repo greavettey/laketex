@@ -21,21 +21,25 @@ use std::sync::{Arc, OnceLock};
 static GLOBAL_PDFIUM: OnceLock<std::result::Result<Arc<Pdfium>, String>> = OnceLock::new();
 
 /// High-DPI PDF rasterization engine powered by Google PDFium.
-pub struct PdfRenderer {
-    pdfium: Option<Arc<Pdfium>>,
-    init_error: Option<String>,
-}
-
-impl Default for PdfRenderer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Clone, Default)]
+pub struct PdfRenderer;
 
 impl PdfRenderer {
-    /// Attempts to bind PDFium from bundled binaries, local executable directory, or system PATH.
+    /// Initializes PDFium lazily in a background thread for instant (<1ms) application startup.
     pub fn new() -> Self {
-        let global_res = GLOBAL_PDFIUM.get_or_init(|| {
+        // Trigger background initialization so PDFium is warm when compilation completes
+        std::thread::Builder::new()
+            .name("pdfium-loader".to_string())
+            .spawn(|| {
+                let _ = Self::global_pdfium();
+            })
+            .ok();
+        Self
+    }
+
+    /// Returns the global PDFium instance, initializing it if not already loaded.
+    pub fn global_pdfium() -> &'static std::result::Result<Arc<Pdfium>, String> {
+        GLOBAL_PDFIUM.get_or_init(|| {
             match pdfium_bundled::bind_pdfium_silent() {
                 Ok(p) => Ok(Arc::new(p)),
                 Err(e1) => {
@@ -56,18 +60,7 @@ impl PdfRenderer {
                     }
                 }
             }
-        });
-
-        match global_res {
-            Ok(arc_pdfium) => Self {
-                pdfium: Some(arc_pdfium.clone()),
-                init_error: None,
-            },
-            Err(err) => Self {
-                pdfium: None,
-                init_error: Some(format!("PDFium engine init failed: {err}")),
-            },
-        }
+        })
     }
 
     fn find_pdfium_library() -> Option<PathBuf> {
@@ -102,14 +95,20 @@ impl PdfRenderer {
         None
     }
 
-    /// Returns true if the PDFium engine was successfully initialized
+    /// Returns true if the PDFium engine was successfully initialized.
+    /// Ensures initialization has completed.
     pub fn is_ready(&self) -> bool {
-        self.pdfium.is_some()
+        Self::global_pdfium().is_ok()
+    }
+
+    /// Returns true without blocking if PDFium is already loaded in the background.
+    pub fn is_loaded_nonblocking(&self) -> bool {
+        GLOBAL_PDFIUM.get().and_then(|r| r.as_ref().ok()).is_some()
     }
 
     /// Returns initialization error message if binding failed
     pub fn init_error(&self) -> Option<&str> {
-        self.init_error.as_deref()
+        Self::global_pdfium().as_ref().err().map(|s| s.as_str())
     }
 
     /// Renders a specific page from PDF bytes to an `egui::ColorImage` with a specific color mode.
@@ -120,10 +119,14 @@ impl PdfRenderer {
         target_width: u16,
         color_mode: PdfColorMode,
     ) -> Result<(ColorImage, usize)> {
-        let pdfium = self
-            .pdfium
-            .as_ref()
-            .ok_or_else(|| LakeTexError::PdfRender("PDFium engine is not available".to_string()))?;
+        let pdfium = match Self::global_pdfium() {
+            Ok(p) => p,
+            Err(err) => {
+                return Err(LakeTexError::PdfRender(format!(
+                    "PDFium engine is not available: {err}"
+                )))
+            }
+        };
 
         let doc = pdfium
             .load_pdf_from_byte_slice(pdf_bytes, None)

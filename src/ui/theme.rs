@@ -110,8 +110,81 @@ impl ThemeConfig {
         colors.insert("success".into(), "#50fa7b".into());
         colors.insert("info".into(), "#8be9fd".into());
 
+        // Syntax highlighting tokens
+        colors.insert("syntax_command".into(), "#8be9fd".into());          // Cyan
+        colors.insert("syntax_argument".into(), "#50fa7b".into());         // Dracula green
+        colors.insert("syntax_package".into(), "#ffb86c".into());          // Dracula orange/gold
+        colors.insert("syntax_tag_property".into(), "#ff79c6".into());     // Dracula pink
+        colors.insert("syntax_property_number".into(), "#bd93f9".into());  // Dracula purple
+        colors.insert("syntax_property_boolean".into(), "#bd93f9".into()); // Dracula purple
+        colors.insert("syntax_property_value".into(), "#f1fa8c".into());   // Dracula yellow
+        colors.insert("syntax_math".into(), "#f1fa8c".into());             // Yellow
+        colors.insert("syntax_math_block".into(), "#ffb86c".into());       // Orange
+        colors.insert("syntax_brace".into(), "#ff79c6".into());            // Pink
+        colors.insert("syntax_bracket".into(), "#8be9fd".into());          // Cyan
+        colors.insert("syntax_special".into(), "#ff5555".into());          // Red
+        colors.insert("syntax_comment".into(), "#6272a4".into());          // Dracula blue-gray
+        colors.insert("syntax_text".into(), "#f8f8f2".into());             // Foreground
+
+        // Bracket tree depth colors
+        colors.insert("bracket_level_0".into(), "#bd93f9".into());         // Purple
+        colors.insert("bracket_level_1".into(), "#8be9fd".into());         // Cyan
+        colors.insert("bracket_level_2".into(), "#50fa7b".into());         // Green
+        colors.insert("bracket_level_3".into(), "#ffb86c".into());         // Orange
+
         Self {
             name: "Dracula (JetBrains)".to_string(),
+            dark_mode: true,
+            colors,
+        }
+    }
+
+    /// Built-in Synthwave Neon theme featuring deep dark backgrounds and bright, glowing syntax colors.
+    pub fn synthwave_neon() -> Self {
+        let mut colors = HashMap::new();
+        // UI backgrounds (deep dark space and twilight obsidian)
+        colors.insert("background".into(), "#13111c".into());
+        colors.insert("panel_background".into(), "#181524".into());
+        colors.insert("editor_background".into(), "#0f0d17".into());
+        colors.insert("faint_bg".into(), "#1d192b".into());
+        colors.insert("text".into(), "#f8f8fc".into());
+        colors.insert("text_muted".into(), "#797596".into());
+        colors.insert("selection".into(), "#382a54".into());
+        colors.insert("selection_stroke".into(), "#ff2a85".into());
+        colors.insert("accent".into(), "#ff2a85".into());
+        colors.insert("border".into(), "#2b2540".into());
+        colors.insert("button_bg".into(), "#231e34".into());
+        colors.insert("button_hover".into(), "#322b4a".into());
+        colors.insert("button_active".into(), "#463d66".into());
+        colors.insert("error".into(), "#ff3860".into());
+        colors.insert("warning".into(), "#ffdd57".into());
+        colors.insert("success".into(), "#00ff9f".into());
+        colors.insert("info".into(), "#00f0ff".into());
+
+        // Bright pretty syntax highlighting colors
+        colors.insert("syntax_command".into(), "#00f0ff".into());          // Radiant electric cyan
+        colors.insert("syntax_argument".into(), "#00ff9f".into());         // Bright spring mint
+        colors.insert("syntax_package".into(), "#ffe600".into());          // Radiant canary yellow
+        colors.insert("syntax_tag_property".into(), "#ff2a85".into());     // Hot glowing pink
+        colors.insert("syntax_property_number".into(), "#ff9f43".into());  // Bright neon tangerine
+        colors.insert("syntax_property_boolean".into(), "#b967ff".into()); // Bright electric violet
+        colors.insert("syntax_property_value".into(), "#2ee6ca".into());   // Bright neon aqua
+        colors.insert("syntax_math".into(), "#ffe600".into());             // Bright canary yellow
+        colors.insert("syntax_math_block".into(), "#ff9f43".into());       // Bright neon tangerine
+        colors.insert("syntax_brace".into(), "#ff2a85".into());            // Pretty hot pink
+        colors.insert("syntax_bracket".into(), "#b967ff".into());          // Bright electric violet
+        colors.insert("syntax_special".into(), "#ff5e7e".into());          // Pretty neon coral
+        colors.insert("syntax_comment".into(), "#797596".into());          // Pastel twilight lavender
+        colors.insert("syntax_text".into(), "#f8f8fc".into());             // Crisp white
+
+        // Bracket tree depth colors
+        colors.insert("bracket_level_0".into(), "#ff2a85".into());     // Level 0: Pretty hot pink
+        colors.insert("bracket_level_1".into(), "#00f0ff".into());     // Level 1: Electric cyan
+        colors.insert("bracket_level_2".into(), "#ffe600".into());     // Level 2: Canary yellow
+        colors.insert("bracket_level_3".into(), "#00ff9f".into());     // Level 3: Spring mint
+
+        Self {
+            name: "Synthwave Neon".to_string(),
             dark_mode: true,
             colors,
         }
@@ -137,6 +210,22 @@ impl ThemeConfig {
         colors.insert("warning".into(), "#f2c94c".into());
         colors.insert("success".into(), "#27ae60".into());
 
+        // Syntax highlighting tokens
+        colors.insert("syntax_command".into(), "#61afef".into());          // Soft blue
+        colors.insert("syntax_argument".into(), "#98c379".into());         // Sage green
+        colors.insert("syntax_package".into(), "#e5c07b".into());          // Warm gold
+        colors.insert("syntax_tag_property".into(), "#e06c75".into());     // Coral red
+        colors.insert("syntax_property_number".into(), "#d19a66".into());  // Warm amber
+        colors.insert("syntax_property_boolean".into(), "#c678dd".into()); // Soft violet
+        colors.insert("syntax_property_value".into(), "#56b6c2".into());   // Muted cyan
+        colors.insert("syntax_math".into(), "#e5c07b".into());             // Warm gold
+        colors.insert("syntax_math_block".into(), "#d19a66".into());       // Warm amber
+        colors.insert("syntax_brace".into(), "#c678dd".into());            // Soft violet
+        colors.insert("syntax_bracket".into(), "#56b6c2".into());          // Muted cyan
+        colors.insert("syntax_special".into(), "#e06c75".into());          // Coral red
+        colors.insert("syntax_comment".into(), "#5c6370".into());          // Muted slate
+        colors.insert("syntax_text".into(), "#dce1eb".into());             // Off-white
+
         Self {
             name: "Academic Dark".to_string(),
             dark_mode: true,
@@ -159,6 +248,22 @@ impl ThemeConfig {
         colors.insert("button_bg".into(), "#1a1e26".into());
         colors.insert("button_hover".into(), "#242a36".into());
         colors.insert("button_active".into(), "#303948".into());
+
+        // Syntax highlighting tokens
+        colors.insert("syntax_command".into(), "#64b5f6".into());          // Slate sky blue
+        colors.insert("syntax_argument".into(), "#81c784".into());         // Slate soft green
+        colors.insert("syntax_package".into(), "#ffd54f".into());          // Subdued amber
+        colors.insert("syntax_tag_property".into(), "#e57373".into());     // Subdued terracotta
+        colors.insert("syntax_property_number".into(), "#ffb74d".into());  // Warm peach
+        colors.insert("syntax_property_boolean".into(), "#ba68c8".into()); // Muted lavender
+        colors.insert("syntax_property_value".into(), "#4dd0e1".into());   // Light cyan
+        colors.insert("syntax_math".into(), "#ffd54f".into());
+        colors.insert("syntax_math_block".into(), "#ffb74d".into());
+        colors.insert("syntax_brace".into(), "#ba68c8".into());
+        colors.insert("syntax_bracket".into(), "#4dd0e1".into());
+        colors.insert("syntax_special".into(), "#e57373".into());
+        colors.insert("syntax_comment".into(), "#7a8499".into());
+        colors.insert("syntax_text".into(), "#d7dce6".into());
 
         Self {
             name: "Slate Minimal".to_string(),
@@ -184,6 +289,22 @@ impl ThemeConfig {
         colors.insert("button_hover".into(), "#434c5e".into());
         colors.insert("button_active".into(), "#4c566a".into());
 
+        // Syntax highlighting tokens (authentic Nord 7-15 palette)
+        colors.insert("syntax_command".into(), "#88c0d0".into());          // Frost ice blue (Nord 8)
+        colors.insert("syntax_argument".into(), "#a3be8c".into());         // Aurora green (Nord 14)
+        colors.insert("syntax_package".into(), "#ebcb8b".into());          // Aurora yellow (Nord 13)
+        colors.insert("syntax_tag_property".into(), "#bf616a".into());     // Aurora red (Nord 11)
+        colors.insert("syntax_property_number".into(), "#d08770".into());  // Aurora orange (Nord 12)
+        colors.insert("syntax_property_boolean".into(), "#b48ead".into()); // Aurora purple (Nord 15)
+        colors.insert("syntax_property_value".into(), "#8fbcbb".into());   // Frost teal (Nord 7)
+        colors.insert("syntax_math".into(), "#ebcb8b".into());
+        colors.insert("syntax_math_block".into(), "#d08770".into());
+        colors.insert("syntax_brace".into(), "#b48ead".into());
+        colors.insert("syntax_bracket".into(), "#81a1c1".into());          // Frost blue (Nord 9)
+        colors.insert("syntax_special".into(), "#bf616a".into());
+        colors.insert("syntax_comment".into(), "#616e88".into());
+        colors.insert("syntax_text".into(), "#eceff4".into());
+
         Self {
             name: "Nord Frost".to_string(),
             dark_mode: true,
@@ -208,6 +329,22 @@ impl ThemeConfig {
         colors.insert("button_hover".into(), "#dce2ec".into());
         colors.insert("button_active".into(), "#cbd4e2".into());
 
+        // Syntax highlighting tokens
+        colors.insert("syntax_command".into(), "#105cb0".into());          // Editorial royal blue
+        colors.insert("syntax_argument".into(), "#1b7a32".into());         // Deep forest green
+        colors.insert("syntax_package".into(), "#b46a00".into());          // Warm amber ochre
+        colors.insert("syntax_tag_property".into(), "#a62438".into());     // Burgundy crimson
+        colors.insert("syntax_property_number".into(), "#c45500".into());  // Warm terracotta
+        colors.insert("syntax_property_boolean".into(), "#7525a6".into()); // Deep royal purple
+        colors.insert("syntax_property_value".into(), "#007a87".into());   // Deep petroleum teal
+        colors.insert("syntax_math".into(), "#b46a00".into());
+        colors.insert("syntax_math_block".into(), "#c45500".into());
+        colors.insert("syntax_brace".into(), "#7525a6".into());
+        colors.insert("syntax_bracket".into(), "#007a87".into());
+        colors.insert("syntax_special".into(), "#a62438".into());
+        colors.insert("syntax_comment".into(), "#636d7e".into());
+        colors.insert("syntax_text".into(), "#232830".into());
+
         Self {
             name: "Paper White".to_string(),
             dark_mode: false,
@@ -219,11 +356,60 @@ impl ThemeConfig {
     pub fn built_in_themes() -> Vec<Self> {
         vec![
             Self::dracula_jetbrains(),
+            Self::synthwave_neon(),
             Self::academic_dark(),
             Self::slate_minimal(),
             Self::nord_frost(),
             Self::paper_white(),
         ]
+    }
+
+    /// Returns the syntax highlight color for a specific token type in this theme.
+    /// Falls back to default dark or light token color if not explicitly defined in `colors`.
+    pub fn token_color(&self, token_type: crate::document::lexer::TokenType) -> Color32 {
+        use crate::document::lexer::TokenType;
+        let keys: &[&str] = match token_type {
+            TokenType::Command => &["syntax_command", "command"],
+            TokenType::Argument => &["syntax_argument", "argument"],
+            TokenType::PackageName => &["syntax_package", "syntax_package_name", "syntax_import"],
+            TokenType::TagProperty => &["syntax_tag_property", "syntax_property", "syntax_attribute"],
+            TokenType::PropertyValueNumber => &["syntax_property_number", "syntax_number"],
+            TokenType::PropertyValueBoolean => &["syntax_property_boolean", "syntax_boolean"],
+            TokenType::PropertyValue => &["syntax_property_value", "syntax_value"],
+            TokenType::MathInline => &["syntax_math", "math"],
+            TokenType::MathBlock => &["syntax_math_block", "math_block"],
+            TokenType::Brace => &["syntax_brace", "brace"],
+            TokenType::Bracket => &["syntax_bracket", "bracket"],
+            TokenType::SpecialChar => &["syntax_special", "special"],
+            TokenType::Comment => &["syntax_comment", "comment"],
+            TokenType::PlainText => &["syntax_text", "text"],
+        };
+        if let Some(c) = self.get_color(keys) {
+            return c;
+        }
+        if self.dark_mode {
+            crate::document::lexer::LatexLexer::token_color_dark(token_type)
+        } else {
+            crate::document::lexer::LatexLexer::token_color_light(token_type)
+        }
+    }
+
+    /// Returns the bracket tree depth color for nested brackets in this theme.
+    pub fn bracket_depth_color(&self, depth: usize, is_matched: bool) -> Color32 {
+        if !is_matched {
+            return self
+                .get_color(&["error", "syntax_error"])
+                .unwrap_or(if self.dark_mode {
+                    Color32::from_rgb(244, 71, 71)
+                } else {
+                    Color32::from_rgb(210, 30, 30)
+                });
+        }
+        let key = format!("bracket_level_{}", depth % 4);
+        if let Some(c) = self.get_color(&[&key]) {
+            return c;
+        }
+        crate::document::lexer::LatexLexer::bracket_depth_color(depth, is_matched, self.dark_mode)
     }
 
     /// Looks up a color by one or more alias keys, returning the parsed [`Color32`].
@@ -519,17 +705,25 @@ impl ThemeConfig {
         let mut themes = Self::built_in_themes();
         let mut candidate_dirs: Vec<PathBuf> = Vec::new();
 
-        // 1. Exe directory
+        // 1. Dedicated themes directory alongside the executable
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
-                candidate_dirs.push(exe_dir.to_path_buf());
                 candidate_dirs.push(exe_dir.join("themes"));
             }
         }
 
-        // 2. Working directory & ./themes
-        candidate_dirs.push(PathBuf::from("."));
+        // 2. Dedicated ./themes directory in current working directory
         candidate_dirs.push(PathBuf::from("themes"));
+
+        // 3. User configuration directory themes
+        if let Some(bin_dir) = crate::compiler::CompilerEngine::laketex_bin_dir() {
+            if let Some(parent) = bin_dir.parent() {
+                let config_themes = parent.join("themes");
+                if config_themes.is_dir() {
+                    candidate_dirs.push(config_themes);
+                }
+            }
+        }
 
         for dir in candidate_dirs {
             if !dir.is_dir() {
@@ -554,6 +748,34 @@ impl ThemeConfig {
                                 themes[pos] = theme; // override built-in or earlier definition
                             } else {
                                 themes.push(theme);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also check current directory, but ONLY for files explicitly containing "theme" in the filename
+        // to avoid expensive JSON deserialization attempts on unrelated files (like package.json, tsconfig.json)
+        if let Ok(entries) = std::fs::read_dir(".") {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name();
+                let name = file_name.to_string_lossy();
+                if name.to_ascii_lowercase().contains("theme") {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let ext = path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if ext == "json" || ext == "yaml" || ext == "yml" {
+                            if let Ok(theme) = Self::from_file(&path) {
+                                if let Some(pos) = themes.iter().position(|t| t.name == theme.name) {
+                                    themes[pos] = theme;
+                                } else {
+                                    themes.push(theme);
+                                }
                             }
                         }
                     }
@@ -677,10 +899,23 @@ mod tests {
     }
 
     #[test]
+    fn test_synthwave_neon_theme() {
+        let theme = ThemeConfig::synthwave_neon();
+        assert_eq!(theme.name, "Synthwave Neon");
+        assert!(theme.dark_mode);
+        assert_eq!(theme.get_color(&["accent"]), Some(Color32::from_rgb(0xff, 0x2a, 0x85)));
+        assert_eq!(theme.get_color(&["syntax_command"]), Some(Color32::from_rgb(0x00, 0xf0, 0xff)));
+        assert_eq!(theme.get_color(&["syntax_argument"]), Some(Color32::from_rgb(0x00, 0xff, 0x9f)));
+        assert_eq!(theme.get_color(&["syntax_brace"]), Some(Color32::from_rgb(0xff, 0x2a, 0x85)));
+        assert_eq!(theme.get_color(&["editor_background"]), Some(Color32::from_rgb(0x0f, 0x0d, 0x17)));
+    }
+
+    #[test]
     fn test_discover_themes_loads_custom_themes() {
         let themes = ThemeConfig::discover_themes();
         let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"Dracula (JetBrains)"));
+        assert!(names.contains(&"Synthwave Neon"));
         assert!(names.contains(&"Academic Dark"));
         assert!(names.contains(&"Solarized Dark"));
         assert!(names.contains(&"Monokai Pro"));

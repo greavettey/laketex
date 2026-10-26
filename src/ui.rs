@@ -27,6 +27,7 @@ use crate::document::packages::{PackageDependency, PackageManager};
 use crate::document::{BuiltinDoc, BuiltinDocKind, Document};
 use crate::engine::layout::{DocumentLayout, TypesetPage};
 use crate::engine::parser::NativeLatexParser;
+use crate::headless::{SharedAppState, StatefulUiCommand};
 use crate::ui::config::AppConfig;
 use crate::ui::drawer::{Drawer, DrawerAction, DrawerTab};
 use crate::ui::editor_panel::EditorPanel;
@@ -41,6 +42,7 @@ use crate::viewer::PdfRenderer;
 use eframe::egui::{self, vec2, Color32, RichText, TopBottomPanel};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Standardized height for panel header menus (sidebar tab bar, editor source view menu, preview pane menu, and top toolbar).
@@ -134,6 +136,8 @@ pub struct LakeTexApp {
 
     /// Port of the accompanying background headless REST API server (if enabled).
     pub api_port: Option<u16>,
+    /// Shared bridge for stateful REST API live editor synchronization (`--with-api --with-state`).
+    pub shared_api_state: Option<Arc<SharedAppState>>,
     /// Status bar notification message.
     pub status_message: String,
     /// State machine for user-consented external tool installs (e.g., Pygments).
@@ -145,10 +149,14 @@ pub struct LakeTexApp {
     pub settings_modal: SettingsModal,
     /// Pending action awaiting user confirmation of unsaved document changes.
     pub pending_close_action: Option<PendingCloseAction>,
+    /// Confirmed close flag to prevent re-intercepting window close after user confirms Discard Changes or Save and Continue.
+    pub allow_close: bool,
     /// Name of the theme last applied to the egui context to avoid redundant per-frame style clones.
     last_applied_theme: String,
     /// Debounce deadline for persisting `Ctrl+Scroll` editor font size adjustments to disk.
     font_size_save_deadline: Option<std::time::Instant>,
+    /// Coalesced debounce deadline `(deadline, last_edited_line)` for recording significant manual user typing bursts in the Audit Log
+    user_edit_audit_deadline: Option<(std::time::Instant, Option<usize>)>,
 }
 
 /// Target action deferred while confirming unsaved document modifications.
@@ -174,23 +182,41 @@ impl LakeTexApp {
         initial_file: Option<PathBuf>,
         api_port: Option<u16>,
     ) -> Self {
+        Self::new_with_state(cc, initial_file, api_port, None)
+    }
+
+    /// Initializes a new [`LakeTexApp`] desktop session with optional stateful REST API synchronization (`--with-state`).
+    pub fn new_with_state(
+        cc: &eframe::CreationContext<'_>,
+        initial_file: Option<PathBuf>,
+        api_port: Option<u16>,
+        shared_api_state: Option<Arc<SharedAppState>>,
+    ) -> Self {
+        crate::log_startup("new_with_state: starting configure_fonts");
         // Configure math and symbol fallback fonts
         ThemeConfig::configure_fonts(&cc.egui_ctx);
+        crate::log_startup("new_with_state: configure_fonts done");
 
         let document = if let Some(ref path) = initial_file {
             Document::load_from_file(path).unwrap_or_default()
         } else {
             Document::default()
         };
+        crate::log_startup("new_with_state: document loaded");
 
         let config = AppConfig::load();
+        crate::log_startup("new_with_state: AppConfig::load done");
         let renderer = PdfRenderer::new();
+        crate::log_startup("new_with_state: PdfRenderer::new done");
         let mut canvas = PdfCanvas::new();
         canvas.set_color_mode(config.pdf_color_mode);
         canvas.set_base_render_width(config.pdf_render_width);
         canvas.fit_to_width = config.fit_to_width;
 
         let compiler = CompilerWorker::new();
+        crate::log_startup("new_with_state: CompilerWorker::new done");
+        PackageManager::warmup_in_background();
+        crate::log_startup("new_with_state: PackageManager warmup spawned");
         let engine = config.default_engine;
         let view_mode = config.view_mode;
         let auto_compile = config.auto_compile;
@@ -199,11 +225,10 @@ impl LakeTexApp {
         let ast = NativeLatexParser::parse(&document.content);
         let typeset_pages = DocumentLayout::layout_document(&ast);
         let latest_pdf_bytes = None;
+        crate::log_startup("new_with_state: native layout done");
 
-        let initial_working_dir = initial_file
-            .as_ref()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let initial_working_dir =
+            ProjectManager::resolve_default_working_dir(initial_file.as_deref());
 
         // Submit initial compilation in background worker thread
         let current_compile_task_id = compiler.submit_with_options(
@@ -214,12 +239,16 @@ impl LakeTexApp {
                 doc_name: Some(document.file_name()),
                 allow_shell_escape: config.allow_shell_escape,
                 shadow_subdocument: None,
+                cancel_token: None,
             },
         );
+        crate::log_startup("new_with_state: initial compile submitted");
 
         let project_manager = ProjectManager::new(Some(initial_working_dir));
+        crate::log_startup("new_with_state: ProjectManager::new done");
 
         let available_themes = ThemeConfig::discover_themes();
+        crate::log_startup("new_with_state: discover_themes done");
         let current_theme = available_themes
             .iter()
             .find(|t| t.name == config.theme_name)
@@ -232,7 +261,45 @@ impl LakeTexApp {
                     .unwrap_or_else(ThemeConfig::dracula_jetbrains)
             });
 
-        Self {
+        if let Some(ref shared) = shared_api_state {
+            shared.set_egui_context(cc.egui_ctx.clone());
+        }
+        crate::ui::drawer::register_audit_egui_context(cc.egui_ctx.clone());
+
+        let mut drawer = Drawer::new();
+        drawer.log_user_event(
+            "Session Started",
+            format!(
+                "Initialized '{}' ({} lines, engine={})",
+                document.file_name(),
+                document.line_count(),
+                engine.display_name()
+            ),
+            Some(1),
+        );
+        if let Some(port) = api_port {
+            if shared_api_state.is_some() {
+                drawer.log_event(
+                    crate::ui::drawer::AuditActor::ApiMutation,
+                    "REST API Active",
+                    format!(
+                        "Stateful Live REST API listening on http://127.0.0.1:{port} (--with-api --with-state)"
+                    ),
+                    None,
+                );
+            } else {
+                drawer.log_event(
+                    crate::ui::drawer::AuditActor::ApiRead,
+                    "REST API Active",
+                    format!(
+                        "Stateless Headless REST API listening on http://127.0.0.1:{port} (--with-api)"
+                    ),
+                    None,
+                );
+            }
+        }
+
+        let app = Self {
             document,
             renderer,
             canvas,
@@ -248,7 +315,7 @@ impl LakeTexApp {
                 ep
             },
             sidebar: Sidebar::new(),
-            drawer: Drawer::new(),
+            drawer,
             project_manager,
             show_sidebar: true,
             show_drawer: false,
@@ -260,13 +327,188 @@ impl LakeTexApp {
             last_duration_ms: None,
             current_compile_task_id,
             api_port,
+            shared_api_state,
             status_message: "Ready".to_string(),
             dependency_prompt: DependencyPromptState::default(),
             config,
             settings_modal: SettingsModal::new(),
             pending_close_action: None,
+            allow_close: false,
             last_applied_theme: String::new(),
             font_size_save_deadline: None,
+            user_edit_audit_deadline: None,
+        };
+        app.sync_shared_api_state();
+        app
+    }
+
+    /// Applies any queued stateful REST API commands to the live GUI editor and viewer.
+    pub fn process_stateful_api_commands(&mut self) {
+        let Some(ref shared) = self.shared_api_state else {
+            return;
+        };
+        if !shared.has_pending_commands() {
+            return;
+        }
+        let shared = shared.clone();
+        let commands = shared.drain_commands();
+        for cmd in commands {
+            match cmd {
+                StatefulUiCommand::SetDocumentContent {
+                    source,
+                    is_dirty,
+                    trigger_compile,
+                    status_message,
+                } => {
+                    self.document.content = source;
+                    self.document.is_dirty = is_dirty;
+                    self.document.refresh_caches();
+                    self.status_message = status_message;
+                    if trigger_compile {
+                        self.trigger_compilation();
+                    } else {
+                        self.recompute_native_layout();
+                    }
+                }
+                StatefulUiCommand::ApplyCompileResult {
+                    source,
+                    is_dirty,
+                    engine,
+                    result,
+                } => {
+                    self.engine = engine;
+                    if let Some(src) = source {
+                        self.document.content = src;
+                        self.document.refresh_caches();
+                        self.recompute_native_layout();
+                    }
+                    if let Some(dirty) = is_dirty {
+                        self.document.is_dirty = dirty;
+                    }
+                    self.last_duration_ms = Some(result.duration_ms);
+                    self.diagnostics = result.diagnostics;
+                    self.raw_stdout = result.stdout;
+                    self.raw_stderr = result.stderr;
+                    if result.success && result.pdf_bytes.is_some() {
+                        self.latest_pdf_bytes = result.pdf_bytes;
+                        self.canvas.invalidate();
+                        self.status_message = format!("API compiled in {} ms", result.duration_ms);
+                    } else if !result.success {
+                        self.status_message = "API compilation failed with errors".to_string();
+                    }
+                }
+                StatefulUiCommand::SetEngine(eng) => {
+                    self.engine = eng;
+                }
+                StatefulUiCommand::Navigate {
+                    line,
+                    page,
+                    view_mode,
+                    zoom,
+                    show_drawer,
+                    drawer_tab,
+                    show_sidebar,
+                } => {
+                    if let Some(l) = line {
+                        self.editor_panel.jump_to_line(l);
+                    }
+                    if let Some(p) = page {
+                        self.canvas.current_page = p.saturating_sub(1);
+                    }
+                    if let Some(vm) = view_mode {
+                        self.view_mode = match vm.trim().to_ascii_lowercase().as_str() {
+                            "pdf" | "raster" | "pdfraster" => ViewMode::PdfRaster,
+                            _ => ViewMode::NativeVector,
+                        };
+                    }
+                    if let Some(z) = zoom {
+                        self.canvas.zoom = z.clamp(0.25, 4.0);
+                    }
+                    if let Some(sd) = show_drawer {
+                        self.show_drawer = sd;
+                    }
+                    if let Some(tab) = drawer_tab {
+                        self.show_drawer = true;
+                        self.drawer.current_tab = match tab.trim().to_ascii_lowercase().as_str() {
+                            "audit" | "renderaudit" => DrawerTab::RenderAudit,
+                            "audit_log" | "auditlog" | "history" => DrawerTab::AuditLog,
+                            "logs" | "log" => DrawerTab::Logs,
+                            "api" => DrawerTab::Api,
+                            _ => DrawerTab::Diagnostics,
+                        };
+                    }
+                    if let Some(ss) = show_sidebar {
+                        self.show_sidebar = ss;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Synchronizes the current GUI editor state into [`SharedAppState`] when running in `--with-state` mode.
+    pub fn sync_shared_api_state(&self) {
+        let Some(ref shared) = self.shared_api_state else {
+            return;
+        };
+        if shared.has_pending_commands() {
+            return;
+        }
+        let view_mode_str = match self.view_mode {
+            ViewMode::NativeVector => "NativeVector",
+            ViewMode::PdfRaster => "PdfRaster",
+        };
+        let work_dir = self
+            .document
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .unwrap_or(&self.project_manager.root_dir);
+        let current_page = self.canvas.current_page + 1;
+        let zoom = self.canvas.zoom;
+
+        let changed = shared
+            .with_snapshot(|cur| {
+                cur.is_dirty != self.document.is_dirty
+                    || cur.engine != self.engine
+                    || cur.view_mode != view_mode_str
+                    || cur.current_page != current_page
+                    || (cur.zoom - zoom).abs() > 0.001
+                    || cur.last_duration_ms != self.last_duration_ms
+                    || cur.diagnostics.len() != self.diagnostics.len()
+                    || cur.file_path != self.document.path
+                    || cur.working_dir.as_path() != work_dir
+                    || cur.master_document != self.project_manager.master_document
+                    || cur.source.len() != self.document.content.len()
+                    || cur.source != self.document.content
+            })
+            .unwrap_or(false);
+
+        if changed {
+            let file_name = self.document.file_name();
+            let work_dir_buf = work_dir.to_path_buf();
+            let line_count = self.document.line_count();
+            let word_count = self.document.word_count();
+            let char_count = self.document.char_count();
+            shared.sync_from_gui(|s| {
+                if s.source != self.document.content {
+                    s.source.clone_from(&self.document.content);
+                }
+                s.line_count = line_count;
+                s.word_count = word_count;
+                s.char_count = char_count;
+                s.file_name = file_name;
+                s.file_path.clone_from(&self.document.path);
+                s.working_dir = work_dir_buf;
+                s.master_document
+                    .clone_from(&self.project_manager.master_document);
+                s.is_dirty = self.document.is_dirty;
+                s.engine = self.engine;
+                s.view_mode = view_mode_str.to_string();
+                s.current_page = current_page;
+                s.zoom = zoom;
+                s.diagnostics.clone_from(&self.diagnostics);
+                s.last_duration_ms = self.last_duration_ms;
+            });
         }
     }
 
@@ -326,6 +568,7 @@ impl LakeTexApp {
                                     doc_name: Some(master_name.to_string()),
                                     allow_shell_escape: self.config.allow_shell_escape,
                                     shadow_subdocument,
+                                    cancel_token: None,
                                 },
                             );
                             self.current_compile_task_id = id;
@@ -373,6 +616,7 @@ impl LakeTexApp {
                     doc_name,
                     allow_shell_escape: self.config.allow_shell_escape,
                     shadow_subdocument: None,
+                    cancel_token: None,
                 },
             );
             self.current_compile_task_id = id;
@@ -380,11 +624,38 @@ impl LakeTexApp {
         }
     }
 
+    /// Cancels active or frozen compilation, terminates any running compiler processes, and resets UI state.
+    pub fn cancel_compilation(&mut self) {
+        self.compiler.cancel();
+        self.current_compile_task_id = self.compiler.next_task_id();
+        self.status_message = "Compilation cancelled by user".to_string();
+        self.raw_stderr = "Compilation aborted: compiler process terminated by user.".to_string();
+        self.drawer.log_user_event(
+            "Compile Cancelled",
+            format!(
+                "Aborted compilation of '{}' with {}",
+                self.document.file_name(),
+                self.engine.display_name()
+            ),
+            None,
+        );
+    }
+
     /// Evaluates keyboard shortcuts and triggers corresponding actions (save, compile, find, open, etc.).
     pub fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // While capturing a key combination in the settings modal, do not trigger normal shortcuts
         if self.settings_modal.is_capturing() {
             return;
+        }
+
+        // Cancel active or frozen compilation on Escape (when modals and find/replace are closed)
+        if self.compiler.is_compiling()
+            && !self.editor_panel.find_replace.is_open
+            && !self.project_manager.show_modal
+            && !self.settings_modal.is_open
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.cancel_compilation();
         }
 
         if self.config.shortcuts.matches_compile(ctx) {
@@ -421,6 +692,16 @@ impl LakeTexApp {
                 self.status_message = format!("Save error: {e}");
             } else {
                 self.status_message = format!("Saved {}", path.display());
+                self.drawer.log_user_event(
+                    "File Saved",
+                    format!(
+                        "Saved '{}' ({} lines, {} bytes)",
+                        self.document.file_name(),
+                        self.document.line_count(),
+                        self.document.content.len()
+                    ),
+                    None,
+                );
             }
         } else {
             self.save_document_as();
@@ -440,6 +721,15 @@ impl LakeTexApp {
                 self.status_message = format!("Save error: {e}");
             } else {
                 self.status_message = format!("Saved as {}", path.display());
+                self.drawer.log_user_event(
+                    "File Saved As",
+                    format!(
+                        "Saved document as '{}' ({} lines)",
+                        self.document.file_name(),
+                        self.document.line_count()
+                    ),
+                    None,
+                );
                 if let Some(parent) = path.parent() {
                     self.project_manager.set_root_dir(parent.to_path_buf());
                 }
@@ -481,6 +771,7 @@ impl LakeTexApp {
         match Document::load_from_file(path) {
             Ok(doc) => {
                 self.document = doc;
+                self.user_edit_audit_deadline = None;
                 self.canvas.reset_cache();
                 self.canvas.current_page = 0;
                 let ast = NativeLatexParser::parse(&self.document.content);
@@ -489,6 +780,16 @@ impl LakeTexApp {
                     crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast)
                         .ok();
                 self.status_message = format!("Loaded {}", path.display());
+                self.drawer.log_user_event(
+                    "File Opened",
+                    format!(
+                        "Opened '{}' ({} lines, {} words)",
+                        self.document.file_name(),
+                        self.document.line_count(),
+                        self.document.word_count()
+                    ),
+                    Some(1),
+                );
 
                 // If opened file lives in a different project directory, update working directory
                 if let Some(parent) = path.parent() {
@@ -507,10 +808,34 @@ impl LakeTexApp {
 
     /// Inserts LaTeX code snippet text into the editor (at the current caret position, or before `\end{document}` if not focused).
     pub fn insert_snippet_into_editor(&mut self, ctx: &egui::Context, snippet: &str) {
-        self.editor_panel
+        let new_pos = self
+            .editor_panel
             .insert_snippet_at_caret(ctx, &mut self.document.content, snippet);
         self.document.is_dirty = true;
         self.document.refresh_caches();
+        let line_num = self
+            .document
+            .content
+            .chars()
+            .take(new_pos)
+            .filter(|&c| c == '\n')
+            .count()
+            + 1;
+        let first_line_preview = snippet
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("snippet")
+            .trim();
+        self.drawer.log_user_event(
+            "Snippet Inserted",
+            format!(
+                "Inserted snippet '{}' ({} chars) into '{}'",
+                first_line_preview,
+                snippet.chars().count(),
+                self.document.file_name()
+            ),
+            Some(line_num),
+        );
         if self.auto_compile {
             self.trigger_compilation();
         } else {
@@ -550,6 +875,11 @@ impl LakeTexApp {
             }
             ProjectAction::WorkingDirChanged(dir) => {
                 self.status_message = format!("Working directory: {}", dir.display());
+                self.drawer.log_user_event(
+                    "Workspace Changed",
+                    format!("Switched project root to '{}'", dir.display()),
+                    None,
+                );
                 if self.auto_compile {
                     self.trigger_compilation();
                 }
@@ -557,10 +887,20 @@ impl LakeTexApp {
             ProjectAction::SetMasterDocument(path) => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                 self.status_message = format!("👑 Master Document: {name}");
+                self.drawer.log_user_event(
+                    "Master Document",
+                    format!("Set master compilation document to '{name}'"),
+                    None,
+                );
                 self.trigger_compilation();
             }
             ProjectAction::ClearMasterDocument => {
                 self.status_message = "Master Document cleared".to_string();
+                self.drawer.log_user_event(
+                    "Master Document",
+                    "Cleared master document setting",
+                    None,
+                );
                 self.trigger_compilation();
             }
         }
@@ -578,6 +918,7 @@ impl LakeTexApp {
     /// Replaces the current editor content with a fresh starter document.
     pub fn perform_new_document(&mut self) {
         self.document = Document::default();
+        self.user_edit_audit_deadline = None;
         self.canvas.reset_cache();
         self.canvas.current_page = 0;
         let ast = NativeLatexParser::parse(&self.document.content);
@@ -585,6 +926,11 @@ impl LakeTexApp {
         self.latest_pdf_bytes =
             crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
         self.status_message = "New document created".to_string();
+        self.drawer.log_user_event(
+            "New Document",
+            "Initialized new untitled document from template",
+            Some(1),
+        );
         self.trigger_compilation();
     }
 
@@ -601,6 +947,7 @@ impl LakeTexApp {
     pub fn perform_load_builtin_doc(&mut self, kind: BuiltinDocKind) {
         let doc_info = BuiltinDoc::get(kind);
         self.document = Document::new(doc_info.content.to_string(), None);
+        self.user_edit_audit_deadline = None;
         self.canvas.reset_cache();
         self.canvas.current_page = 0;
         let ast = NativeLatexParser::parse(&self.document.content);
@@ -608,6 +955,11 @@ impl LakeTexApp {
         self.latest_pdf_bytes =
             crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast).ok();
         self.status_message = format!("Loaded documentation: {}", doc_info.title);
+        self.drawer.log_user_event(
+            "Manual Loaded",
+            format!("Loaded built-in documentation '{}'", doc_info.title),
+            Some(1),
+        );
         self.drawer.status_feedback = Some((
             format!("✓ Opened {}", doc_info.filename),
             std::time::Instant::now(),
@@ -971,6 +1323,7 @@ impl LakeTexApp {
             self.pending_close_action = None;
         } else if execute_discard {
             self.pending_close_action = None;
+            self.document.is_dirty = false;
             self.execute_pending_action(pending, false, ctx);
         } else if execute_save_and_continue {
             self.save_document();
@@ -990,6 +1343,9 @@ impl LakeTexApp {
     ) {
         match action {
             PendingCloseAction::ExitApp => {
+                self.document.is_dirty = false;
+                self.allow_close = true;
+                self.compiler.cancel();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             PendingCloseAction::NewDocument => {
@@ -1010,8 +1366,18 @@ impl LakeTexApp {
 
 impl eframe::App for LakeTexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Window close interception: if user clicks [X] while document is dirty, cancel immediate close and show prompt
-        if ctx.input(|i| i.viewport().close_requested()) && self.document.is_dirty {
+        static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+        if FIRST_FRAME.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            crate::log_startup("First frame update() entered!");
+        }
+
+        // Apply any pending live commands from the stateful REST API server (--with-api --with-state)
+        self.process_stateful_api_commands();
+        // Drain any background API or user audit events into the in-memory drawer buffer
+        self.drawer.poll_api_audit_events();
+
+        // Window close interception: if user clicks [X] while document is dirty and close not yet confirmed, cancel immediate close and show prompt
+        if ctx.input(|i| i.viewport().close_requested()) && self.document.is_dirty && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending_close_action = Some(PendingCloseAction::ExitApp);
         }
@@ -1072,21 +1438,13 @@ impl eframe::App for LakeTexApp {
             && !self.dependency_prompt.user_declined
             && !self.dependency_prompt.is_installing
         {
+            crate::log_startup("update: detecting dependencies");
             self.dependency_prompt.auto_prompted_once = true;
             let missing = PackageManager::detect_dependencies(&self.document.content);
             if let Some(first_missing) = missing.into_iter().find(|d| !d.installed) {
                 self.prompt_dependency_consent(first_missing);
             }
-        }
-
-        // Auto-generate Native PDF fallback if switching to PDF Vector View without cached PDF bytes
-        if self.view_mode == ViewMode::PdfRaster && self.latest_pdf_bytes.is_none() {
-            let ast = NativeLatexParser::parse(&self.document.content);
-            if let Ok(bytes) =
-                crate::engine::pdf_exporter::NativePdfExporter::export_to_pdf_bytes(&ast)
-            {
-                self.latest_pdf_bytes = Some(bytes);
-            }
+            crate::log_startup("update: detecting dependencies done");
         }
 
         // Handle global keyboard shortcuts
@@ -1124,6 +1482,15 @@ impl eframe::App for LakeTexApp {
             if self.engine != prev_engine {
                 self.config.default_engine = self.engine;
                 let _ = self.config.save();
+                self.drawer.log_user_event(
+                    "Engine Changed",
+                    format!(
+                        "Switched compiler engine from {} to {}",
+                        prev_engine.display_name(),
+                        self.engine.display_name()
+                    ),
+                    None,
+                );
                 self.canvas.invalidate();
                 self.trigger_compilation();
             }
@@ -1138,7 +1505,20 @@ impl eframe::App for LakeTexApp {
                 self.drawer.current_tab = DrawerTab::Diagnostics;
             }
 
+            if action.cancel_compile_requested {
+                self.cancel_compilation();
+            }
+
             if action.compile_requested {
+                self.drawer.log_user_event(
+                    "Manual Compile",
+                    format!(
+                        "Triggered manual build of '{}' with {}",
+                        self.document.file_name(),
+                        self.engine.display_name()
+                    ),
+                    None,
+                );
                 self.canvas.invalidate();
                 self.trigger_compilation_with_mode(true);
             }
@@ -1197,9 +1577,10 @@ impl eframe::App for LakeTexApp {
                 ui.label(format!("Chars: {}", self.document.char_count()));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let api_label = match self.api_port {
-                        Some(port) => format!("REST API: :{port}"),
-                        None => "REST API: Off".to_string(),
+                    let api_label = match (self.api_port, self.shared_api_state.is_some()) {
+                        (Some(port), true) => format!("REST API: :{port} (Stateful)"),
+                        (Some(port), false) => format!("REST API: :{port}"),
+                        (None, _) => "REST API: Off".to_string(),
                     };
                     ui.colored_label(
                         Color32::from_rgb(97, 175, 239),
@@ -1232,6 +1613,7 @@ impl eframe::App for LakeTexApp {
                         &self.raw_stdout,
                         &self.raw_stderr,
                         self.api_port,
+                        self.shared_api_state.is_some(),
                         self.latest_pdf_bytes.as_deref(),
                     );
                     match action {
@@ -1283,6 +1665,14 @@ impl eframe::App for LakeTexApp {
                                 PackageManager::insert_package(&self.document.content, &pkg);
                             self.document.is_dirty = true;
                             self.document.refresh_caches();
+                            self.drawer.log_user_event(
+                                "Package Imported",
+                                format!(
+                                    "Injected \\usepackage{{{pkg}}} into '{}'",
+                                    self.document.file_name()
+                                ),
+                                Some(2),
+                            );
                             if self.auto_compile {
                                 self.trigger_compilation();
                             } else {
@@ -1353,12 +1743,57 @@ impl eframe::App for LakeTexApp {
                                 std::borrow::Cow::Borrowed(&self.diagnostics)
                             };
 
-                        let text_changed = self.editor_panel.show(
+                        crate::log_startup("update: editor_panel.show starting");
+                        let text_changed = self.editor_panel.show_with_theme(
                             ui,
                             &mut self.document.content,
                             &editor_diagnostics,
                             self.current_theme.dark_mode,
+                            Some(&self.current_theme),
                         );
+                        crate::log_startup("update: editor_panel.show done");
+
+                        if let Some((act, det, line)) =
+                            self.editor_panel.pending_audit_event.take()
+                        {
+                            self.drawer.log_user_event(act, det, line);
+                            self.user_edit_audit_deadline = None;
+                        } else if text_changed {
+                            let active_line = self
+                                .editor_panel
+                                .last_cursor_range
+                                .map(|(s, _)| {
+                                    self.document
+                                        .content
+                                        .chars()
+                                        .take(s)
+                                        .filter(|&c| c == '\n')
+                                        .count()
+                                        + 1
+                                });
+                            self.user_edit_audit_deadline = Some((
+                                std::time::Instant::now() + Duration::from_millis(1500),
+                                active_line,
+                            ));
+                        }
+
+                        if let Some((deadline, edit_line)) = self.user_edit_audit_deadline {
+                            if std::time::Instant::now() >= deadline {
+                                self.drawer.log_user_event(
+                                    "Document Edited",
+                                    format!(
+                                        "Modified '{}' ({} lines, {} words)",
+                                        self.document.file_name(),
+                                        self.document.line_count(),
+                                        self.document.word_count()
+                                    ),
+                                    edit_line,
+                                );
+                                self.user_edit_audit_deadline = None;
+                            } else {
+                                ctx.request_repaint_after(Duration::from_millis(250));
+                            }
+                        }
 
                         if text_changed {
                             self.document.is_dirty = true;
@@ -1399,6 +1834,7 @@ impl eframe::App for LakeTexApp {
                     vec2(ui.available_width(), ui.available_height()),
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
+                        crate::log_startup("update: ViewerPanel::show starting");
                         let action = ViewerPanel::show(
                             ui,
                             &mut self.canvas,
@@ -1410,6 +1846,7 @@ impl eframe::App for LakeTexApp {
                             has_errors,
                             self.document.line_count(),
                         );
+                        crate::log_startup("update: ViewerPanel::show done");
                         if let ViewerAction::JumpToLine(line) = action {
                             self.editor_panel.jump_to_line(line);
                         }
@@ -1449,6 +1886,16 @@ impl eframe::App for LakeTexApp {
             self.canvas.fit_to_width = self.config.fit_to_width;
             self.auto_compile = self.config.auto_compile;
             self.status_message = "Preferences updated & saved".to_string();
+            self.drawer.log_user_event(
+                "Settings Updated",
+                format!(
+                    "Updated preferences (theme='{}', engine={}, auto_compile={})",
+                    self.config.theme_name,
+                    self.engine.display_name(),
+                    self.auto_compile
+                ),
+                None,
+            );
             if self.engine != prev_engine {
                 self.canvas.invalidate();
                 self.trigger_compilation();
@@ -1458,9 +1905,17 @@ impl eframe::App for LakeTexApp {
         // 9. Unsaved Changes Confirmation Modal
         self.render_unsaved_changes_modal(ctx);
 
+        // Keep stateful REST API snapshot synchronized with the live GUI editor
+        self.sync_shared_api_state();
+
         // Request rapid repaints while tasks are compiling or installing
         if self.compiler.is_compiling() || self.dependency_prompt.is_installing {
             ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
+        static FIRST_FRAME_END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+        if FIRST_FRAME_END.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            crate::log_startup("First frame update() completed!");
         }
     }
 }

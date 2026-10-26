@@ -18,6 +18,24 @@
     "error": "#ff6188",
     "warning": "#fc9867",
     "success": "#a9dc76",
-    "info": "#78dce8"
+    "info": "#78dce8",
+    "syntax_command": "#78dce8",
+    "syntax_argument": "#a9dc76",
+    "syntax_package": "#ffd866",
+    "syntax_tag_property": "#ff6188",
+    "syntax_property_number": "#ab9df2",
+    "syntax_property_boolean": "#ab9df2",
+    "syntax_property_value": "#fc9867",
+    "syntax_math": "#ffd866",
+    "syntax_math_block": "#fc9867",
+    "syntax_brace": "#ff6188",
+    "syntax_bracket": "#78dce8",
+    "syntax_special": "#ff6188",
+    "syntax_comment": "#727072",
+    "syntax_text": "#fcfcfa",
+    "bracket_level_0": "#ffd866",
+    "bracket_level_1": "#78dce8",
+    "bracket_level_2": "#a9dc76",
+    "bracket_level_3": "#ff6188"
   }
 }

@@ -56,6 +56,23 @@ pub mod viewer;
 pub use error::{LakeTexError, Result};
 pub use i18n::{current_locale, set_locale, tr, tr_args};
 
+/// Global process startup timestamp for diagnostic latency profiling.
+pub static MAIN_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Logs startup checkpoint timing relative to process start when `LAKETEX_LOG_STARTUP` is set.
+pub fn log_startup(step: &str) {
+    if std::env::var_os("LAKETEX_LOG_STARTUP").is_some() {
+        if let Some(start) = MAIN_START.get() {
+            use std::io::Write;
+            let line = format!("[+{:>8.2?}] {}\n", start.elapsed(), step);
+            eprint!("{}", line);
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("startup_timing.txt") {
+                let _ = f.write_all(line.as_bytes());
+            }
+        }
+    }
+}
+
 /// Creates a standard `std::process::Command` configured with `CREATE_NO_WINDOW` on Windows
 /// to prevent console window popups when invoking external subprocesses, and populates `PATH`
 /// with any discovered Python/Conda/local tool directories.

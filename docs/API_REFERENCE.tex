@@ -17,12 +17,20 @@
 \maketitle
 
 \begin{abstract}
-Laketex can be run headlessly without a graphical display for automated build pipelines, continuous integration, remote typesetting, and programmatic document audits. This document specifies the command-line interface commands and the embedded HTTP REST API endpoints.
+Laketex can be run headlessly without a graphical display for automated build pipelines, continuous integration, remote typesetting, and programmatic document audits, or in live stateful co-editing mode alongside the desktop GUI. This document specifies the command-line interface commands and the embedded HTTP REST API endpoints.
 \end{abstract}
 
 \section{Command-Line Interface (CLI)}
 
-The single binary \texttt{laketex.exe} provides seven subcommands:
+The single binary \texttt{laketex.exe} provides headless subcommands:
+
+\subsection{\texttt{laketex api-spec}}
+Emits a complete, machine-readable JSON specification of all headless and stateful REST API endpoints, request/response schemas, security invariants, and recommended AI agent workflows (aliases: \texttt{agent-spec}, \texttt{schema}, \texttt{endpoints}).
+\begin{verbatim}
+laketex api-spec
+laketex api-spec --compact
+laketex api-spec --port 3030 -o agent_spec.json
+\end{verbatim}
 
 \subsection{\texttt{laketex compile}}
 Compiles a \LaTeX\ source file directly into PDF format.
@@ -62,11 +70,12 @@ laketex compare document.tex --output-dir ./parity_report
 Launches the embedded HTTP daemon on a specified host and port (default: \texttt{127.0.0.1:3030}).
 \begin{verbatim}
 laketex serve --port 3030
+laketex --with-api --with-state --api-port 3030
 \end{verbatim}
 
 \section{Embedded HTTP REST API Endpoints}
 
-When running \texttt{laketex serve} or passing \texttt{--with-api} alongside the GUI, the embedded daemon responds to standard JSON requests:
+When running \texttt{laketex serve} or passing \texttt{--with-api} (and optionally \texttt{--with-state}) alongside the GUI, the embedded daemon responds to standard JSON requests:
 
 \begin{table}[htbp]
 \centering
@@ -74,8 +83,13 @@ When running \texttt{laketex serve} or passing \texttt{--with-api} alongside the
 \toprule
 \textbf{Method} & \textbf{Endpoint} & \textbf{Description} \\
 \midrule
-\texttt{GET} & \texttt{/health} & Server status and available compiler engines \\
-\texttt{POST} & \texttt{/api/compile} & Compiles \LaTeX\ source to base64 PDF \\
+\texttt{GET} & \texttt{/api/spec} & Machine-readable AI agent API specification (\texttt{laketex api-spec}) \\
+\texttt{GET} & \texttt{/api/help} & Quick endpoint directory and CLI command overview \\
+\texttt{GET} & \texttt{/health} & Server status, stateful mode flag, and available compiler engines \\
+\texttt{GET} & \texttt{/api/document} & [\texttt{--with-state}] Read live GUI editor buffer and diagnostics \\
+\texttt{POST/PATCH} & \texttt{/api/document} & [\texttt{--with-state}] Replace or surgically patch live GUI editor buffer \\
+\texttt{POST} & \texttt{/api/navigate} & [\texttt{--with-state}] Jump editor to line, switch viewer page/mode/tab \\
+\texttt{POST} & \texttt{/api/compile} & Compiles \LaTeX\ source to base64 PDF (updates GUI in \texttt{--with-state}) \\
 \texttt{POST} & \texttt{/api/check} & Syntax linting with structured diagnostics \\
 \texttt{POST} & \texttt{/api/outline} & Extracts section and equation outline tree \\
 \texttt{POST} & \texttt{/api/debug} & Audits math and matrix syntax \\
