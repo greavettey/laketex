@@ -1,19 +1,5 @@
-//! # Pure-Rust Native Typesetting Engine
-//!
-//! An independent, in-process LaTeX parser, mathematical formula typesetter, page layout
-//! generator, and PDF producer written from the ground up in 100% safe Rust.
-//!
-//! ## Subsystems
-//! - [`ast`]: Rich typed Abstract Syntax Tree representing LaTeX document structure
-//! - [`parser`]: Recursive descent parser extracting blocks, macros, equations, and tables
-//! - [`math`]: Mathematical formula rendering engine featuring balanced-brace fraction formatting,
-//!   bracketed 2D matrices (`pmatrix`, `bmatrix`), superscripts, subscripts, and Greek symbols
-//! - [`layout`]: Physical page layout manager with margin calculations, line wrapping,
-//!   page breaks, running headers, and forward/backward SyncTeX coordinate bounding boxes
-//! - [`native_renderer`]: Egui vector drawing implementation rendering crisp vector preview
-//!   with interactive double-click SyncTeX caret positioning
-//! - [`pdf_exporter`]: Academic PDF producer generating publication-quality PDFs via `printpdf`
-//! - [`render_debugger`]: Command and preview render auditor identifying flawed LaTeX math and matrix commands
+//! In-process LaTeX parser, math typesetter, page layout and PDF export, used for the
+//! live preview without needing a TeX install.
 
 pub mod ast;
 pub mod layout;

@@ -47,40 +47,26 @@ pub struct ContextualDiagnostic {
     pub details: Option<String>,
 }
 
-/// Comprehensive contextual error report containing execution environment, source metrics,
-/// diagnostics, and raw compiler streams.
+/// Error report containing diagnostics and compiler output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorReport {
-    /// LakeTex version
     pub app_version: String,
-    /// Operating system platform and architecture
     pub os_platform: String,
-    /// Timestamp of generation
     pub timestamp: String,
-    /// Name or path of the compiled document
     pub document_name: String,
-    /// Compilation engine backend used
     pub engine_name: String,
-    /// Total lines in the document
     pub total_lines: usize,
-    /// Total words in the document
     pub word_count: usize,
-    /// CTAN packages detected in the document preamble
     pub detected_packages: Vec<String>,
-    /// Number of fatal errors
     pub error_count: usize,
-    /// Number of warnings
     pub warning_count: usize,
-    /// Context-rich diagnostics list
     pub diagnostics: Vec<ContextualDiagnostic>,
-    /// Raw stdout captured from the compiler process
     pub raw_stdout: String,
-    /// Raw stderr captured from the compiler process
     pub raw_stderr: String,
 }
 
 impl ErrorReport {
-    /// Generates a comprehensive contextual error report from document source and diagnostics.
+    /// Builds an error report from document source and diagnostics.
     pub fn generate(
         document_source: &str,
         document_name: &str,

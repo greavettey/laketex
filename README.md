@@ -3,308 +3,102 @@
   <h1><em>L</em>aketex</h1>
 </div>
 
-A lightweight, portable LaTeX editor, live viewer, and typesetting studio written in safe Rust.
+Laketex is a lightweight, portable LaTeX editor and live previewer written in Rust.
 
-Laketex is designed as a single, self-contained executable that gives you a complete, publication-grade LaTeX writing environment with zero setup. It packages a bundled Tectonic engine for full TeX package compatibility alongside an in-process, pure-Rust typesetting engine for instant sub-millisecond drafting, high-DPI dual-mode vector viewing, bi-directional SyncTeX navigation, a visual parity testing harness, and a headless REST API enabling agentic document creation.
+It is designed to run as a single executable without requiring a multi-gigabyte TeX Live or MiKTeX installation. It bundles the [Tectonic](https://tectonic-typesetting.github.io/) typesetting engine to handle standard LaTeX packages on demand, alongside a built-in pure-Rust typesetter for quick in-memory drafts.
 
-> *Why call it "Laketex"?*
-> 
-> I was born and raised in Muskoka, which is a region of Ontario containing over 1600 lakes. I moved to a city for post-secondary, and to put it simply, I miss the lake.  
+#### *Why call it "Laketex"?*
+> I was born and raised in Muskoka, which is a region of Ontario containing over 1600 lakes. I moved to a city for post-secondary, and to put it simply, I miss the lake.
 
----
-
-## The Ideas Behind the Project
-
-If you have ever written an academic paper, research report, or thesis in LaTeX, you are probably familiar with the traditional dilemma:
-
-1. **The Traditional Local Distribution Route**: Setting up a local TeX environment traditionally means downloading TeX Live or MiKTeX. That typically means downloading between 5 and 8 gigabytes of data, running installers that touch system PATH variables, managing Perl-based package scripts, and waiting several seconds every time you recompile a document. For people on modern laptops, developers who value clean systems, or researchers working across multiple machines, this is heavy and cumbersome.
-2. **The Cloud SaaS Route**: Because local TeX setup is notoriously friction-heavy, many writers moved to browser-based cloud tools like Overleaf. While cloud editors eliminate the installation headache, they introduce their own set of compromises: they require an active internet connection, lock your files behind accounts and subscription tiers, suffer from browser and network latency on every recompile, and present privacy and confidentiality concerns for proprietary research, industrial documents, or sensitive personal data.
-
-Laketex was built to bridge this gap.
-
-The goal was simple: What if you could have the speed, privacy, and portability of a modern native desktop application—like Sublime Text or VS Code—paired with a complete, publication-ready LaTeX typesetting workflow, distributed as a single standalone executable that you can drop into a folder and run immediately?
+#### *Statement on agentic AI*
+> Initially, this project was scaffolded with agentic AI assistance. I used this as a crutch to help myself learn more of Rust. However, I now feel that the use of agentic AI does not further the goals of the project, and reduces what I enjoy most about coding. As a result of this I have begun stripping unnecessary features, rewriting previously agent-written files and utilities, and bringing the human element of the project back into focus. I don't regret the agentic AI use; it has become a standard practice in industry and can be useful in the hands of a human. Reading, verifying, and interogating the agent on its design decisions and framework choices has helped me broaden my understanding of Rust, and with my curation has created the foundations of a safe, performant project. Regardless of past use, I do now feel it's counterintuitive to this project, and will be stripping it back. 
 
 ---
 
-## Foundational Principles
+## Features
 
-Laketex is guided by five foundational principles:
-
-### 1. Zero-Install Portability
-Laketex ships as an all-in-one binary. There are no system installers, no administrator privileges required, no background daemons, and no registry pollution. You can carry it on a USB flash drive, copy it to an air-gapped machine, or drop it into a project folder and start writing immediately.
-
-### 2. Extreme Local Privacy and Offline Autonomy
-Your research, mathematical derivations, notes, and manuscripts belong entirely on your computer. Laketex does not mandate telemetry, user accounts, or cloud subscriptions. Both the editor and its compilation pipelines run strictly on your local hardware. Whether you are on an airplane, in a field station without internet access, or working in a secure lab, your tools remain 100% operational.
-
-### 3. Immediate Cognitive Flow
-Writing complex mathematics requires intense concentration. Waiting 3 to 10 seconds every time you recompile breaks your train of thought. Laketex emphasizes low-latency feedback. Edits trigger instant, debounced recompilation, and the pure-Rust native engine can typeset draft pages in 5 to 75 milliseconds directly in memory, giving you visual feedback while you type.
-
-### 4. Pragmatic Dual-Engine Architecture
-Rather than pretending a pure-Rust AST parser can immediately replace 45 years of Donald Knuth's TeX virtual machine quirks and the millions of packages on CTAN—or alternatively forcing users to endure a massive external distribution—Laketex combines both:
-- An in-process **pure-Rust native engine** for instant offline drafting and low-latency feedback.
-- A **bundled, cross-platform Tectonic engine** as the default production typesetter for 100% package compatibility, TikZ drawings, and publication-grade micro-typography.
-
-### 5. Ergonomics and Thoughtful Typography
-Academic writing involves long hours in front of a screen. Laketex provides high-DPI rendering, eye-friendly color modes (including Daylight White, Academic Dark, and Sepia parchment), intuitive bi-directional SyncTeX navigation, a working directory project manager, and contextual error diagnostics that explain what went wrong in plain human English rather than dumping raw TeX logs.
+- **Dual typesetting engines**:
+  - **Bundled Tectonic**: Full LaTeX package compatibility, TikZ drawings, and BibTeX citations without a separate system distribution.
+  - **Native Rust typesetter**: Fast in-process preview for basic documents, math formulas, matrices, and tables.
+- **Live PDF preview**: Rendered via Google PDFium with dark mode color inversion and sepia reading options.
+- **Bi-directional SyncTeX**: Click a heading or equation in the outline to jump to the code, or double-click anywhere in the PDF preview to jump back to that source line.
+- **Project manager (`Ctrl+P`)**: Sidebar file tree for managing multi-file LaTeX projects, figures, and bibliographies.
+- **Semantic theming**: Ships with Dracula, Synthwave Neon, Monokai Pro, Solarized Dark, Academic Dark, Slate Minimal, and Paper White. Custom themes can be added as `.json` or `.yaml` files in a `themes/` folder.
+- **Headless CLI & REST API**: Build documents from scripts (`laketex compile document.tex -o output.pdf`) or run a local HTTP server (`laketex serve --port 3030`).
 
 ---
 
-## Dual Engines: Built-in Rust Typesetter vs. Bundled Tectonic
+## Current Status & Known Issues
 
-One of the central design questions when building Laketex was whether to write a LaTeX typesetter from scratch in pure Rust or wrap an existing TeX engine. We decided to do both, because each solves a different, vital part of the writing experience.
-
-### The Built-in Pure-Rust Engine (`src/engine/`)
-
-The pure-Rust engine is an entirely custom typesetting pipeline written in safe Rust. It does not spawn external processes, write intermediate files to disk, or invoke external command-line tools.
-
-- **How it works**: Source text is tokenized by `LatexLexer` and parsed by `NativeLatexParser` into a structured Abstract Syntax Tree (`LatexAst`). The mathematical formatter (`MathRenderer`) parses arbitrary nested fraction trees, AMS matrices (`pmatrix`, `bmatrix`, `vmatrix`), and Unicode operators. The layout engine (`DocumentLayout`) formats pages with page margins, equation numbers, and text layout jobs (`egui::text::LayoutJob`) that perform word wrapping and drop shadow rendering. Vector PDFs are exported in-memory using `printpdf`.
-- **Performance**: In-memory compilation takes between 5 and 75 milliseconds.
-- **When to use it**: It is ideal for taking lecture notes, sketching out equations, working completely offline without an internet cache, or writing straightforward academic articles where instant feedback is paramount.
-
-### Why Tectonic is the Bundled Default Engine
-
-While our pure-Rust engine handles standard academic structures, equations, tables, and lists with remarkable speed, Donald Knuth's TeX is fundamentally different from static markup languages like Markdown or HTML:
-
-1. **Turing-Complete Macro Expansion**: LaTeX is not merely markup; it is an imperative, Turing-complete macro language. Packages dynamically alter category codes (`\catcode`), compute dimensional arithmetic (`\dimexpr`), execute loops (`\loop`), and redefine commands at runtime. Packages like `tikz`, `pgfplots`, `biblatex`, and `hyperref` rely heavily on deep macro evaluation.
-2. **Math Micro-Typography (Knuth's Appendix G)**: TeX formats mathematics using the 22 rules defined in Appendix G of The TeXbook. It relies on precise font metric bounding boxes (`.tfm` files and OpenType `MATH` tables) to dynamically calculate fraction vinculum baselines, radical hook alignments, delimiter stretch steps, and italic slant corrections. Replicating 100% visual parity across all arbitrary mathematical expressions requires a genuine TeX engine.
-3. **The Global Knuth-Plass Paragraph Breaking Algorithm**: Rather than wrapping text line-by-line, TeX evaluates penalties, glue elasticity, and badness across an entire paragraph simultaneously to achieve optimal typographic color and avoid awkward hyphenation.
-
-To deliver true publication-grade output without forcing users to install TeX Live, we chose **Tectonic**.
-
-Tectonic modernizes the battle-tested Web2C XeTeX engine into clean Rust and C, eliminating the archaic TeX directory structure and format file initialization steps. Most importantly, Tectonic streams required CTAN packages (`.sty`, `.cls`, font metrics) on demand over HTTPS and caches them locally.
-
-**We bundle Tectonic directly into Laketex on all supported platforms (Windows, macOS, and Linux).**
-The compressed binary is embedded directly into the application's read-only data section. On first compile, Laketex unpacks Tectonic in roughly 350 milliseconds. There is nothing to install, no PATH configuration, and no external dependency hunting. You get genuine TeX typography and CTAN package support out of the box.
-
----
-
-## Real-World Benchmarks
-
-All benchmarks were measured on a standard developer workstation (AMD Ryzen 7, 32 GB RAM, Windows 11) using identical academic article source files (including title blocks, abstracts, mathematical formulations, matrices, booktabs tables, and citations).
-
-### Startup Time
-
-| Application / Mode | Cold Startup Time | Runtime Architecture | Installation Overhead |
-| :--- | :--- | :--- | :--- |
-| **Laketex (CLI Execution)** | **~12 ms** (~75–95 ms via PowerShell wrapper) | Native Rust In-Process Dispatch | Zero Setup (Single standalone binary) |
-| **Laketex (Headless Daemon)**| **~209 ms** | Background HTTP REST Microservice | Zero Setup |
-| **Laketex (Desktop Studio GUI)** | **~90–140 ms** (Init: **< 10 ms**) | Native Rust + Immediate-Mode GPU UI (instant first frame & async PDFium warmup) | Single 34.1 MiB binary |
-| TeXstudio | 3.20 s | C++ / Qt GUI | ~180 MB + 5–8 GB TeX Live |
-| VS Code + LaTeX Workshop | 4.50 s | Electron / TypeScript | ~520 MB + 5–8 GB TeX Live |
-| Overleaf | 1.80 s – 3.50 s | Web Browser / Remote SaaS | Browser + Account Login |
-
-### Compilation Latency
-
-| Engine / Pipeline | Average Build Time | Execution Mechanism | Network Dependency |
-| :--- | :--- | :--- | :--- |
-| **Laketex Native (Draft Layout)** | **< 5 ms** | In-Process Memory AST & Vector Pipeline | 100% Offline (Zero Network) |
-| **Laketex Native (PDF Export)** | **280 ms – 350 ms** (small/med), **2.48 s** (15-page doc) | Vector PDF Export via `printpdf` | 100% Offline (Zero Network) |
-| **Laketex Bundled Tectonic** | **797 ms – 1,649 ms** (small/med), **2.58 s** (large doc) | Bundled Executable + Local CTAN Cache | Auto-downloads on first import |
-| External pdfLaTeX (TeX Live) | 850 ms – 1,450 ms | Spawns Subprocess | Requires Pre-installed Distro |
-| External XeLaTeX (TeX Live) | 1,200 ms – 2,200 ms | Spawns Subprocess | Requires Pre-installed Distro |
-
-### Memory Footprint
-
-| Mode / State | Idle | Active / Typing | Peak Compilation Load |
-| :--- | :--- | :--- | :--- |
-| **Laketex Headless Daemon** | **8.9 MB** | **15.2 MB** | **15.2 MB** |
-| **Laketex Desktop Studio GUI** | **123 MB** | **198 MB** | **218 MB** |
-| TeXstudio | ~180 MB | ~210 MB | ~280 MB |
-| VS Code + LaTeX Workshop | ~680 MB | ~740 MB | ~890 MB |
-
-### Disk Footprint
-
-| Component | Laketex | Traditional TeX Setup (TeX Live) |
-| :--- | :--- | :--- |
-| **Editor Binary** | **34.1 MiB** (~35.8 MB decimal, includes PDFium & Tectonic) | ~180 MB (TeXstudio only) |
-| **TeX Distribution** | 0 MB (Embedded in binary) | 5,000 MB – 8,000 MB (TeX Live full) |
-| **Total Disk Requirement** | **34.1 MiB** (~35.8 MB decimal) | **5,200 MB – 8,200 MB** |
-
-### Native Engine Visual Parity Metrics
-
-Using our built-in automated parity harness (`laketex compare`), we benchmarked the pure-Rust Native engine against Tectonic across standard academic papers rendered at 1000px width:
-
-| Metric | Result | Interpretation |
-| :--- | :--- | :--- |
-| **Visual Match Percentage** | **~89.8% – 91.1%** | High structural and text alignment parity |
-| **Mean Squared Error (MSE)** | **0.028 – 0.035** | Minimal normalized pixel deviation on standard text |
-| **Peak Signal-to-Noise Ratio (PSNR)**| **14.5 – 15.4 dB** | High visual fidelity for draft viewing |
-
----
-
-## Capabilities Built Into Laketex
-
-Over the course of developing Laketex, we built a comprehensive set of features designed to make writing technical documents fast, predictable, and pleasant:
-
-### Dual-Mode Document Viewing
-- **PDF Vector View (Favored & Default)**: High-resolution live preview powered by embedded PDFium. Renders genuine TeX font glyphs, vector lines, and embedded graphics with crisp anti-aliasing.
-- **Native Vector View**: In-process pure-Rust vector canvas featuring true word wrapping (`egui::text::LayoutJob`), precise margin bounds, drop shadow framing, and zoomed mathematical equations.
-- **Eye-Care Color Grading**: Switch effortlessly between **Daylight White** (default), **Academic Dark Inverted**, and **Sepia Eye-Care Parchment**, complete with full internationalization (i18n) support.
-
-### Bi-Directional SyncTeX Navigation
-- **Forward Navigation**: Click any section, subsection, equation, or table in the Outline sidebar to jump the editor cursor directly to that line.
-- **Inverse Navigation**: Double-click any paragraph, formula, or heading in either preview canvas to scroll the editor buffer straight to the corresponding source line.
-
-### Contextual Diagnostics and Render Audit
-- **Human-Readable Error Analysis**: Cryptic TeX errors are translated into structured Markdown cards that pinpoint the exact source line, display surrounding code context, infer what the document was attempting to do, and provide concrete suggestions for fixes.
-- **Deep Render Audit**: The `debug` engine scans documents for unclosed matrix delimiters, missing `amsmath` imports, unbalanced braces, and math commands placed in plain text.
-- **One-Click Export**: Easily copy formatted error reports to your clipboard or export them to disk (`.md`, `.json`, `.log`) for collaboration or debugging.
-
-### Safe Package Dependency Consent & Conda Integration
-- When documents import packages that depend on external host tools (such as `minted` requiring Python's `pygments`, or `pythontex`), Laketex inspects system prerequisites and prompts for explicit user permission before installing anything.
-- **Robust Conda & VirtualEnv Support**: Laketex automatically discovers active virtual environments (`VIRTUAL_ENV`), active Conda environments (`CONDA_PREFIX`), and all environments registered in `~/.conda/environments.txt`. It supports Miniconda, Anaconda, Miniforge, Mambaforge, and Micromamba across Windows, macOS, and Linux.
-- **Multi-Strategy Installation & Fallback**: Package installation tries `pip`, user-level install (`--user`), PEP 668 managed environment override (`--break-system-packages`), and seamlessly falls back to `conda install -y -c conda-forge` if `pip` is absent in a Conda environment.
-- **Post-Install Verification**: Never fails silently—Laketex validates that the required binary exists on disk before closing the modal, and automatically injects containing scripts/bin paths into the compiler process `PATH` so `shell-escape` succeeds immediately.
-- If consent is declined or tools are unavailable, Laketex automatically injects safe draft fallback options (`\PassOptionsToPackage{draft}{minted}`) so your document continues to compile cleanly without crashing.
-
-### Working Directory Project Manager (`Ctrl+P`)
-- Integrated project files tree for multi-file LaTeX manuscripts.
-- Pin master documents (`main.tex`) so sub-files compile in their proper context.
-- Quick asset insertion: insert images (`\includegraphics`), sub-files (`\input`), citations, and math snippets with a single click.
-
-### Live Find and Replace Drawer (`Ctrl+F` / `Ctrl+H`)
-- Dedicated search drawer supporting case-sensitive matching, whole-word filtering, and live occurrence counts.
-- Step through occurrences with Next and Previous buttons or execute Replace and Replace All across the document.
-
-### Flexible Key-Value Theming Engine
-- Choose between built-in palettes: **Dracula (JetBrains)**, **Academic Dark**, **Slate Minimal**, **Nord Frost**, and **Paper White**.
-- Fully user-customizable: drop simple `.json` or `.yaml` files into a `themes/` folder alongside the executable. Laketex hot-reloads them instantly without restarting.
-
-### Live GUI Stateful REST API (`--with-api --with-state`)
-- Launch with `laketex --with-api --with-state --api-port 3030` to enable real-time bidirectional synchronization between REST API clients (including autonomous AI coding agents) and the live desktop GUI.
-- Programmatic edits delivered via `POST /api/document` (full replacement, surgical line ranges, or search-and-replace patches) immediately reflect in the open editor buffer and recompile the preview.
-- Viewport and UI state can be manipulated via `POST /api/navigate` (jumping caret line, changing preview page, adjusting zoom, switching view mode, or opening specific drawer tabs).
-
-### Machine-Readable Agent API Specification (`laketex api-spec`)
-- Comprehensive, self-describing JSON specification of all REST endpoints, schemas, security invariants, and recommended agent workflows.
-- Run `laketex api-spec` (or `laketex api-spec --compact`) from the command line to emit the schema without starting the network server.
-- When running, query `GET /api/spec` or `GET /api/help` for full programmatic introspection.
-
-### In-Memory Session Audit Log (`DrawerTab::AuditLog`)
-- Virtualized, RAM-only event log in the bottom Console Drawer tracking both user edits and API interactions with distinct color-coded badges (`[USER]`, `[API MUTATION]`, `[API READ]`).
-- Includes real-time search filtering, actor category toggles, click-to-jump line buttons, auto-scroll locking, and instant clearing without persisting telemetry to disk.
-
-### Bracket Tree-Aware Highlighting & Paired Delimiter Jump
-- Resilient bracket tree tokenizer (`document::lexer::BracketTree`) that tracks nesting depths across nested braces, brackets, and parentheses while ignoring comments and escaped delimiters.
-- Interactive `{…}` badge in the editor header displays the matching paired delimiter line and jumps the caret directly to it on click.
-
-### Toolbar Cancel Compilation Button with Process Tree Killing
-- Prominent Cancel compilation button in the top toolbar (and `Escape` keyboard shortcut) backed by `CompileCancellationToken`.
-- Instantly aborts long-running or frozen compiler tasks by terminating the entire operating system process tree cleanly.
-
-### Unsaved Changes Confirmation Modal with Discard Changes & Exit
-- Intercepts application close (`[X]`), `New`, `Open`, and `Load Manual` whenever the document is dirty.
-- Working `Save and Continue`, `Discard Changes` (resets dirty status and cleanly exits or transitions via `allow_close`), and `Cancel`.
-
-### Headless CLI and Embedded REST API
-- Run Laketex headlessly in continuous integration pipelines, automated build scripts, or agentic coding workflows.
-- Built-in commands: `compile`, `check`, `debug`, `packages`, `compare`, `api-spec`, `docs`, and `serve`.
-- Safe printing helpers prevent `BrokenPipe` panics when piping stdout into terminal filters or wrappers.
-
----
-
-## Feature Support Matrix
-
-| LaTeX Feature / Package | Pure-Rust Native Engine | Bundled Tectonic Engine | Architectural Details |
-| :--- | :---: | :---: | :--- |
-| **Document Structure** (`\title`, `\section`, `\subsection`) | Supported | Supported | Native maps sections to clean hierarchy and outline tree. |
-| **Text Inlines** (`\textbf`, `\textit`, `\emph`, `\texttt`) | Supported | Supported | Full typographical style mapping in both vector canvas and PDF. |
-| **Escaped Symbols** (`\%`, `\$`, `\&`, `\#`, `\_`) | Supported | Supported | Correctly escaped without macro leaks. |
-| **Equations** (`equation`, `\[...\]`, `$...$`) | Supported | Supported | Centered equation numbering and balanced parsing. |
-| **Nested Fractions** (`\frac{a}{b}`) | Supported | Supported | Native recursively nests fractions with horizontal vinculum rules. |
-| **Matrices** (`pmatrix`, `bmatrix`, `vmatrix`, `matrix`) | Supported | Supported | Multi-row grids with dynamic bracket and parenthesis fences. |
-| **Lists** (`itemize`, `enumerate`, `description`) | Supported | Supported | Bullet indents, numbering sequences, custom item labels. |
-| **Tables & Tabular** (`tabular`, `\hline`, `\toprule`) | Supported | Supported | Alignment specifiers (`l`, `c`, `r`), multi-row, and multi-column cells. |
-| **Code Highlighting (`minted`, `lstlisting`)** | Supported | Supported | Tectonic renders via Pygments; Native uses safe draft lexer. |
-| **Missing Image Handling** (`\includegraphics`) | Supported | Supported | Inserts clean placeholder bounding box if image is missing. |
-| **Cross-References** (`\label`, `\ref`, `\cite`) | Supported | Supported | In-memory reference resolution and numeric citation numbering. |
-| **Vector Drawings (`tikz`, `pgfplots`)** | Suppressed in Draft | Supported | Native isolates directives to prevent leaks; use Tectonic. |
-| **Custom Macro Expansion (`\def`, `\newcommand`)** | Basic Substitution | Supported | Native parses simple parameter substitution; use Tectonic for loops. |
-| **Advanced Micro-Typing (`microtype`)** | Not Supported | Supported | Optical margin expansion requires TeX virtual machine. |
-| **Custom TrueType Fonts (`fontspec`)** | Not Supported | Supported | Native uses embedded academic Unicode fallbacks. |
-| **Offline Independence** | 100% Offline | Requires Cache | Native needs zero network; Tectonic caches packages from CTAN. |
+- **Startup time on Windows**: Cold launch currently takes longer than intended while the runtime and font fallbacks initialize. This is under active profiling and optimization.
+- **Native engine limits**: The built-in Rust engine parses common LaTeX syntax (sections, fractions, matrices, lists, basic formatting), but does not support arbitrary CTAN macros, complex packages, or TikZ drawings. For full package support, use the bundled Tectonic engine.
 
 ---
 
 ## Quick Start
 
-### 1. Launching the Graphical Studio
+### Graphical Editor
+
 ```bash
-# Launch with the academic starter template
+# Open editor with default template
 laketex
 
 # Open an existing document
-laketex my_paper.tex
+laketex paper.tex
 
-# Launch with the embedded REST API enabled on port 3030
+# Run with local REST API enabled
 laketex --with-api --api-port 3030
-
-# Launch with Live Stateful REST API synchronization enabled
-laketex --with-api --with-state --api-port 3030
 ```
 
-### 2. Command-Line Operations
+### Command Line Subcommands
+
 ```bash
-# Compile LaTeX to PDF directly from the terminal (defaults to Native pure-Rust)
+# Compile to PDF using native draft engine
 laketex compile document.tex -o output.pdf
 
-# Compile using the bundled Tectonic engine
+# Compile using bundled Tectonic (full package support)
 laketex compile document.tex --engine tectonic -o output.pdf
 
-# Run syntax linting and check for errors
+# Syntax check / lint a file
 laketex check document.tex
 
-# Perform a deep typographic and math audit
-laketex debug document.tex --format json
-
-# Visually compare Tectonic vs Native rendering and generate diff metrics
-laketex compare document.tex --output-dir ./parity_report
-
-# Emit the full machine-readable AI agent JSON specification
-laketex api-spec
-
-# List and export built-in offline LaTeX manuals
-laketex docs --list
-laketex docs --export ./docs
-
-# Start the headless HTTP REST API daemon
+# Start the headless HTTP server
 laketex serve --port 3030
+
+# Print JSON API specification
+laketex api-spec
 ```
 
-> **Windows CLI Shell Blocking Note**:  
-> Because `laketex.exe` is compiled as a Windows GUI subsystem application to prevent an unwanted console window popup when launched as a desktop app, Windows shells (PowerShell and `cmd.exe`) detach the process immediately by default.  
-> To wait synchronously for command completion and capture terminal output in PowerShell:
+> **Windows PowerShell note**: Because `laketex.exe` is configured as a Windows GUI subsystem application to avoid flashing a console window when launched from the desktop, PowerShell detaches from it immediately by default. To wait for CLI commands in PowerShell:
 > ```powershell
-> .\laketex.exe compile document.tex --engine native -o output.pdf | Out-Host
-> # Or using Start-Process:
-> Start-Process -Wait .\laketex.exe -ArgumentList "compile document.tex --engine native -o output.pdf"
+> .\laketex.exe compile document.tex --engine tectonic -o output.pdf | Out-Host
 > ```
 
-### 3. Keyboard Shortcuts Reference
+### Keyboard Shortcuts
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Ctrl + S` | Save current document to disk |
-| `Ctrl + Shift + S` | Save document as a new file |
-| `Ctrl + O` | Open file dialog |
-| `Ctrl + N` | Create a new document |
-| `Ctrl + B` | Force immediate recompile |
-| `Ctrl + F` | Open Find drawer (search, next/prev, case, whole word) |
-| `Ctrl + H` | Open Find & Replace drawer (replace, replace all) |
-| `Ctrl + P` | Open Working Directory Project Manager |
-| `Ctrl + ,` | Open Settings & Preferences dialog |
-| `Ctrl + \` | Toggle Left Navigation Sidebar |
-| `Ctrl + J` | Toggle Bottom Diagnostics Drawer |
-| `Ctrl + =` / `Ctrl + +` | Zoom in preview |
-| `Ctrl + -` | Zoom out preview |
-| `Ctrl + 0` | Reset preview zoom to 100% |
-| `Double-Click Preview` | Jump editor cursor to clicked line (SyncTeX) |
+| `Ctrl + S` | Save document |
+| `Ctrl + Shift + S` | Save as new file |
+| `Ctrl + O` | Open file |
+| `Ctrl + N` | New document |
+| `Ctrl + B` | Recompile document |
+| `Escape` | Cancel active compilation |
+| `Ctrl + F` | Find in editor |
+| `Ctrl + H` | Find and Replace |
+| `Ctrl + P` | Project files manager |
+| `Ctrl + ,` | Settings and preferences |
+| `Ctrl + \` | Toggle sidebar |
+| `Ctrl + J` | Toggle diagnostics drawer |
+| `Ctrl + +` / `Ctrl + -` | Zoom in / out in preview |
+| `Ctrl + 0` | Reset preview zoom |
+| `Double-Click Preview` | Jump editor to line (SyncTeX) |
 
 ---
 
-## Configuration and Custom Themes
+## Configuration & Custom Themes
 
-Laketex stores its configuration in a human-readable JSON file (`laketex_config.json`) alongside the executable:
+Preferences are stored in `laketex_config.json` next to the executable:
 
 ```json
 {
@@ -316,50 +110,32 @@ Laketex stores its configuration in a human-readable JSON file (`laketex_config.
   "auto_compile": true,
   "fit_to_width": true,
   "font_size": 13.0,
-  "language": "en",
-  "shortcuts": {
-    "compile": "Ctrl+B",
-    "save": "Ctrl+S",
-    "open": "Ctrl+O",
-    "new_doc": "Ctrl+N",
-    "project_files": "Ctrl+P",
-    "find": "Ctrl+F",
-    "replace": "Ctrl+H",
-    "settings": "Ctrl+,"
-  }
+  "language": "en"
 }
 ```
 
-### Custom Themes Folder (`themes/`)
-Laketex automatically loads any `.json` or `.yaml` theme files located in a `themes/` folder placed alongside `laketex.exe` or in the working directory. Themes support fine-grained semantic syntax highlighting keys (`syntax_command`, `syntax_argument`, `syntax_package`, `syntax_tag_property`, `syntax_property_number`, `syntax_property_boolean`, `syntax_property_value`, `syntax_math`, `syntax_math_block`, `syntax_brace`, `syntax_bracket`, `syntax_special`, `syntax_comment`, `syntax_text`).
+### Adding Custom Themes
 
-Example theme file (`themes/monokai_pro.json`):
+Drop `.json` or `.yaml` files into a `themes/` folder next to `laketex.exe`. For example, `themes/my_theme.json`:
+
 ```json
 {
-  "name": "Monokai Pro",
+  "name": "My Custom Theme",
   "dark_mode": true,
   "colors": {
-    "background": "#2d2a2e",
-    "panel_background": "#221f22",
-    "editor_background": "#19181a",
-    "text": "#fcfcfa",
-    "text_muted": "#727072",
-    "accent": "#ffd866",
-    "selection": "#403e41",
-    "border": "#363437",
-    "error": "#ff6188",
-    "warning": "#fc9867",
-    "success": "#a9dc76",
-    "syntax_command": "#78dce8",
-    "syntax_argument": "#a9dc76",
-    "syntax_package": "#ffd866",
-    "syntax_tag_property": "#ff6188",
-    "syntax_property_number": "#ab9df2",
-    "syntax_property_boolean": "#ab9df2",
-    "syntax_property_value": "#fc9867",
-    "syntax_math": "#ffd866",
-    "syntax_comment": "#727072",
-    "syntax_text": "#fcfcfa"
+    "background": "#1e1e2e",
+    "panel_background": "#181825",
+    "editor_background": "#11111b",
+    "text": "#cdd6f4",
+    "accent": "#cba6f7",
+    "syntax_command": "#89b4fa",
+    "syntax_argument": "#a6e3a1",
+    "syntax_package": "#f9e2af",
+    "syntax_tag_property": "#f38ba8",
+    "syntax_property_number": "#fab387",
+    "syntax_property_boolean": "#fab387",
+    "syntax_math": "#f9e2af",
+    "syntax_comment": "#6c7086"
   }
 }
 ```
@@ -368,29 +144,26 @@ Example theme file (`themes/monokai_pro.json`):
 
 ## Building from Source
 
-To compile Laketex from source, you only need standard Rust (stable toolchain 1.80+):
+Requirements: Rust stable toolchain (1.80+).
 
 ```bash
 # Clone the repository
-git clone https://github.com/laketex/laketex.git
+git clone https://github.com/greavettey/laketex.git
 cd laketex
 
-# Run all test suites (unit, document, and integration tests)
+# Run tests
 cargo test
 
-# Run the automated visual parity benchmark
-cargo test --test visual_parity_tests -- --nocapture
-
-# Build optimized release executable
+# Build release executable
 cargo build --release
 ```
+
+The compiled executable will be in `target/release/laketex.exe`.
 
 ---
 
 ## Documentation
 
-- **[User Guide & Operations Manual](docs/USER_GUIDE.md)**: Guide covering UI navigation, project management, and shortcuts.
-- **[System Architecture & Subsystems](docs/ARCHITECTURE.md)**: Deep dive into the internal state machine, compiler channels, and PDFium bindings.
-- **[REST API Reference Manual](docs/API_REFERENCE.md)**: JSON schemas, endpoint specifications, and headless integration examples.
-- **[Theming Guide](docs/THEMING_GUIDE.tex)**: Specifications for creating custom JSON and YAML color palettes.
-- **Generated Rustdoc**: Complete API documentation is generated via `cargo doc --no-deps --open`.
+- **[System Architecture](docs/ARCHITECTURE.md)**: Notes on the parser, compiler worker, and PDFium bindings.
+- **[REST API Reference](docs/API_REFERENCE.md)**: Endpoints and payload schemas.
+- **[Theming Guide](docs/THEMING_GUIDE.tex)**: Theme key-value tokens and palette configuration.

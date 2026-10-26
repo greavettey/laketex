@@ -1,52 +1,15 @@
-//! # LakeTex UI Theming Engine
-//!
-//! Provides a flexible, key-value driven theming engine that controls all visual aspects
-//! of the LakeTex user interface.
-//!
-//! ## Key Capabilities
-//! - **Simple Key-Value Color Configuration**: Uses hex strings (`#RRGGBB`, `#RGB`, `#RRGGBBAA`)
-//!   mapped to intuitive semantic UI keys (e.g., `background`, `panel_background`, `text`, `accent`).
-//! - **Dynamic Custom Themes**: Discovers and loads custom themes formatted as JSON or YAML
-//!   files (`.json`, `.yaml`, `.yml`) placed alongside the executable or in `./themes/`.
-//! - **Built-in Dracula Theme**: Ships a faithful reproduction of the JetBrains IDE Dracula
-//!   color palette alongside Academic Dark, Slate Minimal, Nord Frost, and Paper White.
-//! - **Comprehensive Math & Symbol Fonts**: Automatically registers system mathematical symbol
-//!   and emoji fonts on Windows to eliminate square glyph missing-character boxes.
+//! UI theme definitions and palette loader.
 
 use egui::{Color32, CornerRadius, Margin, Stroke, Style, Visuals};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Key-value driven UI theme specification.
-///
-/// Themes can be defined either in code or externally in JSON/YAML configuration files.
-///
-/// # Example JSON:
-/// ```json
-/// {
-///   "name": "Dracula (JetBrains)",
-///   "dark_mode": true,
-///   "colors": {
-///     "background": "#282a36",
-///     "panel_background": "#21222c",
-///     "editor_background": "#282a36",
-///     "text": "#f8f8f2",
-///     "text_muted": "#6272a4",
-///     "selection": "#44475a",
-///     "accent": "#bd93f9",
-///     "border": "#383a59"
-///   }
-/// }
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThemeConfig {
-    /// Human-readable display name of the theme shown in the UI selector
     pub name: String,
-    /// Whether this theme uses dark mode rendering
     #[serde(default = "default_dark")]
     pub dark_mode: bool,
-    /// Semantic color key-value mappings (hex values: `#RRGGBB`, `#RRGGBBAA`, `#RGB`)
     #[serde(default)]
     pub colors: HashMap<String, String>,
 }
@@ -433,7 +396,7 @@ impl ThemeConfig {
         None
     }
 
-    /// Configures comprehensive system math, symbol, and emoji fonts into egui
+    /// Registers fallback symbol/math fonts in egui so unicode chars don't render as tofu.
     pub fn configure_fonts(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
 

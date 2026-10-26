@@ -1526,8 +1526,7 @@ impl HeadlessServer {
         }
     }
 
-    /// Generates a comprehensive, machine-parseable JSON specification of the LakeTex REST API
-    /// designed specifically for AI coding agents, tool-calling LLMs, and automated orchestrators.
+    /// JSON endpoint schema for the REST API.
     pub fn agent_api_spec_json(
         port: u16,
         runtime_stateful: Option<bool>,

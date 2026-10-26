@@ -1,19 +1,9 @@
-//! # Application Logo & Branding Assets
-//!
-//! Bundles the official `assets/LaketexLogo.png` asset directly into the compiled executable
-//! on all platforms via `include_bytes!`.
-//!
-//! Provides utilities for:
-//! - Setting the OS window and taskbar application icon via [`egui::IconData`].
-//! - Decoding and caching the bundled PNG into an [`egui::TextureHandle`] for runtime UI rendering.
-//! - Rendering the LakeTex logo across the toolbar, preferences, and about dialogs.
+//! Logo and window icon assets.
 
 use egui::{Color32, ColorImage, IconData, Rect, Response, TextureHandle, TextureOptions, Ui, Vec2};
 
-/// Raw PNG bytes of the official LakeTex logo embedded into the binary at compile time.
 pub const LOGO_PNG_BYTES: &[u8] = include_bytes!("../../assets/LaketexLogo.png");
 
-/// Loads and decodes the bundled PNG logo into an [`egui::ColorImage`].
 pub fn load_logo_color_image() -> ColorImage {
     let dynamic_img = image::load_from_memory(LOGO_PNG_BYTES)
         .expect("assets/LaketexLogo.png must be a valid PNG image bundled into the binary");
@@ -22,8 +12,7 @@ pub fn load_logo_color_image() -> ColorImage {
     ColorImage::from_rgba_unmultiplied([width as usize, height as usize], rgba.as_raw())
 }
 
-/// Loads and decodes the bundled PNG logo into [`egui::IconData`] for window/taskbar icons,
-/// downscaled to 256x256 to avoid multi-megabyte window icon allocations.
+/// Loads and downscales the logo to 256x256 for the window icon.
 pub fn app_icon_data() -> IconData {
     let dynamic_img = image::load_from_memory(LOGO_PNG_BYTES)
         .expect("assets/LaketexLogo.png must be a valid PNG image bundled into the binary");

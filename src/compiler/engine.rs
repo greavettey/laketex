@@ -1,10 +1,4 @@
-//! # Compiler Engine Abstraction & Execution
-//!
-//! Provides a unified interface ([`CompilerEngine`]) for compiling LaTeX documents across
-//! multiple backend engines:
-//! - Pure-Rust Native typesetter (instant, portable, zero-install)
-//! - Tectonic (embedded TeX engine with automatic CTAN downloading)
-//! - Traditional TeX distributions (pdfLaTeX, XeLaTeX, LuaLaTeX)
+//! LaTeX compiler backends (Native, Tectonic, and system TeX engines).
 
 use crate::compiler::diagnostic::{Diagnostic, DiagnosticParser};
 use crate::engine::layout::DocumentLayout;
@@ -91,15 +85,15 @@ pub fn kill_process_tree(pid: u32) {
 /// Supported LaTeX compiler backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineKind {
-    /// Pure Rust Native Engine (Zero-Install, Instant, Built-in)
+    /// In-process Rust typesetter for quick drafts
     Native,
-    /// Tectonic engine with automated CTAN resource downloading
+    /// Bundled Tectonic engine
     Tectonic,
-    /// Standard pdfLaTeX executable from system TeX Live or MiKTeX
+    /// System pdfLaTeX
     PdfLatex,
-    /// XeLaTeX executable with native system font support
+    /// System XeLaTeX
     XeLatex,
-    /// LuaLaTeX executable with Lua scripting extensions
+    /// System LuaLaTeX
     LuaLatex,
 }
 

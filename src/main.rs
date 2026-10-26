@@ -1,8 +1,5 @@
-//! # LakeTex Main Binary Entry Point
-//!
-//! Evaluates command-line arguments to either execute headless commands (`compile`, `check`,
-//! `watch`, `compare`, `serve`) or initialize the `eframe` GUI desktop application with
-//! an embedded background REST API daemon.
+//! Runs a headless CLI subcommand if one is given, otherwise starts the GUI
+//! (optionally with the REST API in the background).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -53,12 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
     log_startup("CliArgs::parse done");
 
-    // If a CLI subcommand was provided, run headless and exit
     if let Some(cmd) = args.command {
         return CliArgs::execute_subcommand(cmd);
     }
 
-    // Only launch background headless REST API server when explicitly requested via --with-api
     if args.with_state && !args.with_api {
         eprintln!(
             "[Laketex] Warning: --with-state requires --with-api to enable the stateful REST API server."
@@ -66,28 +61,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let config = laketex::ui::config::AppConfig::load();
     log_startup("AppConfig::load done");
-    let api_port = if args.with_api {
-        Some(args.api_port)
-    } else {
-        None
-    };
-    let shared_api_state = if args.with_api && args.with_state {
-        Some(Arc::new(SharedAppState::default()))
-    } else {
-        None
-    };
-    let _api_handle = if let Some(port) = api_port {
-        Some(HeadlessServer::start_background_with_state(
+    let api_port = args.with_api.then_some(args.api_port);
+    let shared_api_state =
+        (args.with_api && args.with_state).then(|| Arc::new(SharedAppState::default()));
+    let api_handle = api_port.map(|port| {
+        HeadlessServer::start_background_with_state(
             "127.0.0.1",
             port,
             config.allow_shell_escape,
             shared_api_state.clone(),
-        ))
-    } else {
-        None
-    };
+        )
+    });
 
-    // Launch egui / eframe GUI application
     let app_icon = laketex::ui::logo::app_icon_data();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -119,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )?;
 
-    if let Some(Ok(handle)) = _api_handle {
+    if let Some(Ok(handle)) = api_handle {
         handle.store(false, Ordering::SeqCst);
     }
 

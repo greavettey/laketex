@@ -1,9 +1,4 @@
-//! # Automated Engine & Dependency Provisioner
-//!
-//! Provides automated provisioning for portable compiler engines (e.g., Tectonic).
-//! On supported platforms (Windows x86_64, Linux x86_64, macOS x86_64/ARM64),
-//! Tectonic is embedded directly within the application binary in compressed form
-//! and extracted on demand with zero network downloads.
+//! Unpacks or downloads the Tectonic binary on first use.
 
 #![allow(dead_code)]
 
@@ -182,8 +177,7 @@ impl Provisioner {
         Ok(())
     }
 
-    /// Automatically provisions Tectonic to the local application bin directory.
-    /// Extracts directly from the embedded compressed binary payload if available (zero network download).
+    /// Extracts the embedded Tectonic binary to the local cache dir, falling back to download.
     pub fn provision_tectonic<F: Fn(f32, &str)>(progress_callback: F) -> Result<PathBuf> {
         let _guard = PROVISION_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -208,12 +202,11 @@ impl Provisioner {
             }
         }
 
-        // 1. Unpack embedded binary payload (zero network download) if compiled with payload
         if !EMBEDDED_TECTONIC_GZ.is_empty() {
-            progress_callback(0.3, "Unpacking embedded Tectonic engine (zero-download)...");
+            progress_callback(0.3, "Unpacking embedded Tectonic engine...");
             match Self::unpack_embedded_tectonic(&target_exe) {
                 Ok(()) => {
-                    progress_callback(1.0, "Tectonic engine ready (embedded)");
+                    progress_callback(1.0, "Tectonic engine ready");
                     return Ok(target_exe);
                 }
                 Err(err) => {

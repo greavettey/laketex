@@ -35,9 +35,9 @@ impl AuditActor {
     /// Short badge label displayed in the Audit Log column.
     pub fn badge_label(self) -> &'static str {
         match self {
-            Self::User => "👤 USER",
-            Self::ApiMutation => "⚡ API EDIT",
-            Self::ApiRead => "📡 API READ",
+            Self::User => "USER",
+            Self::ApiMutation => "API EDIT",
+            Self::ApiRead => "API READ",
         }
     }
 

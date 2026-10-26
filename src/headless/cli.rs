@@ -1,7 +1,4 @@
-//! # Command Line Interface (CLI) Dispatcher
-//!
-//! Handles terminal arguments using `clap` for standalone compilation, syntax checking,
-//! visual parity testing, and launching the headless REST API service.
+//! Command line argument parsing and subcommand dispatch.
 
 use crate::compiler::engine::{CompilerEngine, EngineKind};
 use crate::document::outline::OutlineParser;
@@ -38,13 +35,12 @@ macro_rules! safe_print {
     }};
 }
 
-/// Command line arguments parsed by LakeTex.
 #[derive(Parser, Debug)]
 #[command(
     name = "laketex",
     about = "Laketex: Lightweight, portable LaTeX editor and viewer in Rust",
     version,
-    after_help = "AI AGENT & API SPECIFICATION:\n  Run `laketex api-spec` (or `laketex api-spec --compact`) to emit the complete\n  machine-readable JSON specification of all headless & stateful REST API endpoints,\n  request/response schemas, security invariants, and recommended agent workflows.\n  When the REST API server is running, query `GET /api/spec` or `GET /api/help`.\n\nLIVE AGENTIC GUI CO-EDITING:\n  Launch with `laketex --with-api --with-state` to synchronize REST API calls\n  with the live GUI editor, PDF/vector viewer, and Console Drawer Audit Log in real time."
+    after_help = "Run `laketex api-spec` for the JSON API schema, or `laketex serve` to start the HTTP server."
 )]
 pub struct CliArgs {
     /// Optional headless CLI subcommand to execute instead of launching the desktop GUI.

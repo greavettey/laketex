@@ -1,31 +1,16 @@
-//! # Mathematical Formula Typesetting Engine
-//!
-//! Transforms LaTeX mathematical formulas into high-fidelity Unicode typographic layouts.
-//!
-//! Handles:
-//! - Recursive balanced-brace fraction formatting (`\frac{num}{den}`)
-//! - Multi-row bracketed matrix formatting (`pmatrix`, `bmatrix`, `vmatrix`)
-//! - Unicode superscripts and subscripts
-//! - Greek letters, mathematical operators, and relational symbols
-//! - Equation centering and numbering
+//! Translates LaTeX math commands, fractions, matrices, and scripts into unicode text.
 
 use egui::{Color32, FontId, Ui};
 
-/// A segment within display math: regular inline formula text or an embedded matrix.
 #[derive(Debug, Clone)]
 pub enum MathSegment {
-    /// Plain mathematical text or inline equation tokens.
     Text(String),
-    /// An embedded mathematical matrix environment (e.g., `pmatrix`, `bmatrix`).
     Matrix {
-        /// Matrix environment name (e.g. `"pmatrix"`, `"bmatrix"`).
         env: String,
-        /// Two-dimensional grid of cell contents formatted as strings.
         rows: Vec<Vec<String>>,
     },
 }
 
-/// Pure-Rust mathematical typesetter for formulas and matrices.
 pub struct MathRenderer;
 
 impl MathRenderer {
@@ -768,14 +753,9 @@ impl MathRenderer {
         }
     }
 
-    /// Replaces standard LaTeX math symbols and Greek macros with their proper Unicode characters.
     pub fn translate_math_symbols(formula: &str) -> String {
-        // Step 1: Format nested fractions
         let frac_handled = Self::format_fractions(formula);
-
-        // Step 2: Format matrices
         let matrix_handled = Self::format_matrices(&frac_handled);
-
         let mut text = matrix_handled;
 
         let replacements = [
@@ -867,7 +847,6 @@ impl MathRenderer {
             text = Self::replace_macro_balanced(&text, cmd_name, |inner| inner.to_string());
         }
 
-        // Step 3: Format superscripts and subscripts
         Self::format_scripts(&text)
     }
 

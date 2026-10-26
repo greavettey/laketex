@@ -1,30 +1,13 @@
-//! # Project Files & Working Directory Manager
-//!
-//! Provides an Overleaf-style Working Directory modal and sidebar file explorer:
-//! - Visual directory tree of files and subfolders (`images/`, `sections/`, etc.)
-//! - Folder creation (e.g. `images`, `sections`, `figures`)
-//! - File creation with LaTeX starter templates (.tex, .bib, .sty, etc.)
-//! - Import / upload files from local filesystem into the project root or subfolders
-//! - One-click opening of any `.tex` file directly into the active editor
-//! - One-click insertion or clipboard copying of `\includegraphics{...}` snippets for images
-//! - One-click insertion or clipboard copying of `\input{...}` snippets for subfiles
-//! - Rename and delete operations with confirmation
-//! - "Open in Explorer" system integration
-//! - Working directory switching (browse project folder)
-//! - Search/filter files across the project
+//! Working directory file tree and project manager.
 
 use egui::{vec2, Color32, RichText, ScrollArea};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-/// Fixed row height in points for virtualized tree rendering.
 pub const ROW_HEIGHT: f32 = 22.0;
-
-/// Maximum directory recursion depth during filesystem scanning to prevent stack overflow.
 pub const MAX_SCAN_DEPTH: usize = 30;
 
-/// Cleans Windows extended length path prefix (`\\?\`) for normalized path comparisons.
 fn dunce_clean_path(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(stripped) = s.strip_prefix(r"\\?\") {
@@ -34,68 +17,43 @@ fn dunce_clean_path(p: &Path) -> PathBuf {
     }
 }
 
-
-/// Classification of file types within a LaTeX project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectFileType {
-    /// Directory or subfolder.
     Directory,
-    /// LaTeX source files (`.tex`, `.ltx`, `.sty`, `.cls`).
     Tex,
-    /// Image and graphic assets (`.png`, `.jpg`, `.jpeg`, `.pdf`, `.eps`, `.svg`).
     Image,
-    /// BibTeX/BibLaTeX bibliography databases (`.bib`).
     Bib,
-    /// Configuration, package stylesheets, or document class definitions.
     StyleOrConfig,
-    /// Tabular or external data files (`.csv`, `.tsv`, `.dat`, `.json`).
     Data,
-    /// Miscellaneous unclassified project assets.
     Other,
 }
 
 impl ProjectFileType {
-    /// Classifies an entry based on its base name string and directory flag with zero heap allocations.
     pub fn from_name_and_is_dir(name: &str, is_dir: bool) -> Self {
         if is_dir {
             return Self::Directory;
         }
         let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
-        match ext {
-            "tex" | "ltx" | "TEX" | "LTX" => Self::Tex,
-            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "pdf" | "eps"
-            | "PNG" | "JPG" | "JPEG" | "GIF" | "SVG" | "WEBP" | "BMP" | "PDF" | "EPS" => Self::Image,
-            "bib" | "BIB" => Self::Bib,
-            "sty" | "cls" | "cfg" | "dtx" | "ins"
-            | "STY" | "CLS" | "CFG" | "DTX" | "INS" => Self::StyleOrConfig,
-            "csv" | "tsv" | "dat" | "json" | "txt" | "yaml" | "yml"
-            | "CSV" | "TSV" | "DAT" | "JSON" | "TXT" | "YAML" | "YML" => Self::Data,
-            _ => {
-                let lower = ext.to_ascii_lowercase();
-                match lower.as_str() {
-                    "tex" | "ltx" => Self::Tex,
-                    "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "pdf" | "eps" => Self::Image,
-                    "bib" => Self::Bib,
-                    "sty" | "cls" | "cfg" | "dtx" | "ins" => Self::StyleOrConfig,
-                    "csv" | "tsv" | "dat" | "json" | "txt" | "yaml" | "yml" => Self::Data,
-                    _ => Self::Other,
-                }
-            }
+        let lower = ext.to_ascii_lowercase();
+        match lower.as_str() {
+            "tex" | "ltx" => Self::Tex,
+            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "pdf" | "eps" => Self::Image,
+            "bib" => Self::Bib,
+            "sty" | "cls" | "cfg" | "dtx" | "ins" => Self::StyleOrConfig,
+            "csv" | "tsv" | "dat" | "json" | "txt" | "yaml" | "yml" => Self::Data,
+            _ => Self::Other,
         }
     }
 
-    /// Classifies a path based on a known directory flag and file extension, avoiding redundant filesystem calls.
     pub fn from_path_with_is_dir(path: &Path, is_dir: bool) -> Self {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         Self::from_name_and_is_dir(name, is_dir)
     }
 
-    /// Classifies a path based on filesystem metadata and file extension.
     pub fn from_path(path: &Path) -> Self {
         Self::from_path_with_is_dir(path, path.is_dir())
     }
 
-    /// Returns an emoji icon representing the file type.
     pub fn icon(&self) -> &'static str {
         match self {
             Self::Directory => "📁",
@@ -108,7 +66,6 @@ impl ProjectFileType {
         }
     }
 
-    /// Returns a human-readable description of the file type.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Directory => "Folder",
@@ -121,42 +78,29 @@ impl ProjectFileType {
         }
     }
 
-    /// Returns true if this file is a graphic/image that can be included via `\includegraphics`.
     pub fn is_image(&self) -> bool {
         matches!(self, Self::Image)
     }
 
-    /// Returns true if this file is a LaTeX document (.tex).
     pub fn is_tex(&self) -> bool {
         matches!(self, Self::Tex)
     }
 }
 
-/// A node in the project file hierarchy (directory or file).
 #[derive(Debug, Clone)]
 pub struct ProjectNode {
-    /// Absolute filesystem path
     pub path: PathBuf,
-    /// Path relative to project root
     pub relative_path: PathBuf,
-    /// File or directory base name
     pub name: String,
-    /// Pre-lowercased base name for zero-allocation fast filter searching
     pub name_lower: String,
-    /// Categorized file type
     pub file_type: ProjectFileType,
-    /// File size in bytes (0 for directories)
     pub size_bytes: u64,
-    /// Last modification timestamp
     pub modified: Option<SystemTime>,
-    /// Child items if this node is a directory
     pub children: Vec<ProjectNode>,
-    /// Whether this directory node is expanded in the tree view
     pub is_expanded: bool,
 }
 
 impl ProjectNode {
-    /// Fast zero-allocation match against an already-lowercased query string.
     pub fn matches_filter_lower(&self, query_lower: &str) -> bool {
         if query_lower.is_empty() {
             return true;
@@ -164,7 +108,6 @@ impl ProjectNode {
         self.name_lower.contains(query_lower)
     }
 
-    /// Fast recursive match against an already-lowercased query string.
     pub fn contains_match_lower(&self, query_lower: &str) -> bool {
         if self.matches_filter_lower(query_lower) {
             return true;
@@ -172,7 +115,6 @@ impl ProjectNode {
         self.children.iter().any(|c| c.contains_match_lower(query_lower))
     }
 
-    /// Checks if this node matches the search filter (case-insensitive).
     pub fn matches_filter(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
@@ -181,7 +123,6 @@ impl ProjectNode {
         self.matches_filter_lower(&q_lower)
     }
 
-    /// Checks if this node or any of its recursive descendants matches the filter.
     pub fn contains_match(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
@@ -191,36 +132,23 @@ impl ProjectNode {
     }
 }
 
-/// User actions emitted by the Project Manager.
 #[derive(Debug, Clone)]
 pub enum ProjectAction {
-    /// No action
     None,
-    /// Switch active editor to a different `.tex` document
     OpenTexFile(PathBuf),
-    /// Insert an `\includegraphics` figure environment at the cursor
     InsertIncludeGraphics {
-        /// Relative path from the working directory to the target image file.
         relative_path: String,
-        /// LaTeX reference label for cross-referencing (e.g. `fig:diagram`).
         label: String,
     },
-    /// Insert an `\input{...}` statement at the cursor
     InsertInput {
-        /// Relative path from the working directory to the referenced `.tex` file.
         relative_path: String,
     },
-    /// Copy text (e.g. snippet or relative path) to clipboard
     CopyToClipboard(String),
-    /// Active working directory was changed by user
     WorkingDirChanged(PathBuf),
-    /// Set a file as the project's Master/Root Document for compilation
     SetMasterDocument(PathBuf),
-    /// Cleared the Master Document (compiles active buffer instead)
     ClearMasterDocument,
 }
 
-/// Internal UI interaction intents collected during tree traversal.
 enum UiIntent {
     ToggleExpand(PathBuf),
     SetTargetFolder(PathBuf),
@@ -237,62 +165,35 @@ enum UiIntent {
     ExpandAll,
 }
 
-/// Reference to a visible node for virtualized row rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlatRow {
-    /// Indices path down the tree to locate the node (e.g. [0, 2, 1])
     pub indices: Vec<usize>,
-    /// Indentation depth level
     pub depth: usize,
 }
 
-/// Overleaf-style Working Directory and Project Files Manager.
 pub struct ProjectManager {
-    /// Active project root directory
     pub root_dir: PathBuf,
-    /// Whether the floating modal window is open
     pub show_modal: bool,
-    /// Cached hierarchical project tree
     pub root_nodes: Vec<ProjectNode>,
-    /// Search filter string
     pub search_query: String,
-    /// Active folder selected as destination for new files/folders or imports
     pub target_folder: PathBuf,
-    /// State: New File dialog input bar open
     pub new_file_open: bool,
-    /// Pending filename input for newly created files
     pub new_file_name: String,
-    /// State: New Folder dialog input bar open
     pub new_folder_open: bool,
-    /// Pending folder name input for newly created directories
     pub new_folder_name: String,
-    /// State: Rename target item
     pub rename_target: Option<PathBuf>,
-    /// Pending new name for the item currently being renamed
     pub rename_new_name: String,
-    /// State: Delete confirmation item
     pub delete_target: Option<PathBuf>,
-    /// Optional designated Master / Root Document for compilation
     pub master_document: Option<PathBuf>,
-    /// Temporary feedback notification
     pub status_message: Option<(String, Instant)>,
-    /// Cached metric totals (file count, directory count, total bytes) for O(1) status queries
     pub cached_metrics: (usize, usize, u64),
-    /// Set of user-expanded folder paths preserved across refreshes
     pub expanded_folders: HashSet<PathBuf>,
-    /// Flag indicating whether the next refresh is the initial workspace scan
     pub is_initial_scan: bool,
-    /// Cached flattened visible rows for O(1) per-frame rendering
     pub cached_visible_nodes: Vec<FlatRow>,
-    /// Last search query string used to build cached visible nodes
     pub last_cached_query: String,
-    /// Dirty flag indicating cached visible rows must be recalculated
     pub visible_nodes_dirty: bool,
-    /// Cached raw active file path to detect file switches
     pub cached_active_raw: Option<PathBuf>,
-    /// Cached canonical active file path to eliminate per-frame canonicalize syscalls
     pub cached_active_path: Option<PathBuf>,
-    /// Cached cleaned active path (stripped Windows \\?\ prefix)
     pub cached_active_clean: Option<PathBuf>,
 }
 
@@ -698,21 +599,7 @@ impl ProjectManager {
         Ok(())
     }
 
-    /// Validates that `candidate` resides strictly inside `self.root_dir`.
-    ///
-    /// Resolves canonical paths to prevent symlink traversal and relative path escaping.
-    ///
-    /// # Arguments
-    /// * `candidate` - The filesystem path to verify.
-    /// * `allow_root` - If `false`, operations targeting the project root itself are rejected.
-    ///
-    /// # Returns
-    /// * `Ok(PathBuf)` containing the canonicalized path within the root.
-    /// * `Err(String)` if canonicalization fails or the path escapes the project root.
-    ///
-    /// # Security
-    /// Guarantees that no caller can create, read, modify, or delete files outside of the
-    /// active project directory boundary.
+    /// Ensures candidate path is within root_dir (resolves symlinks).
     pub fn ensure_within_root(&self, candidate: &Path, allow_root: bool) -> Result<PathBuf, String> {
         let canonical_root = std::fs::canonicalize(&self.root_dir)
             .map_err(|e| format!("Cannot resolve project root directory: {e}"))?;
@@ -746,16 +633,6 @@ impl ProjectManager {
         Ok(canonical_candidate)
     }
 
-    /// Creates a new subfolder inside `target_folder`.
-    ///
-    /// Validates the folder name and ensures the destination remains strictly within
-    /// the project root directory.
-    ///
-    /// # Arguments
-    /// * `folder_name` - Base name of the folder to create.
-    ///
-    /// # Errors
-    /// Returns `Err` if the name is invalid, escapes the project root, or already exists.
     pub fn create_folder(&mut self, folder_name: &str) -> Result<PathBuf, String> {
         Self::validate_entry_name(folder_name)?;
         let trimmed = folder_name.trim();
@@ -779,16 +656,6 @@ impl ProjectManager {
         Ok(folder_path)
     }
 
-    /// Creates a new file inside `target_folder`, populated with an appropriate starter template.
-    ///
-    /// Validates the file name and ensures the destination remains strictly within
-    /// the project root directory.
-    ///
-    /// # Arguments
-    /// * `file_name` - Base name of the file to create (e.g. `document.tex`, `references.bib`).
-    ///
-    /// # Errors
-    /// Returns `Err` if the name is invalid, escapes the project root, or already exists.
     pub fn create_file(&mut self, file_name: &str) -> Result<PathBuf, String> {
         Self::validate_entry_name(file_name)?;
         let trimmed = file_name.trim();
@@ -827,9 +694,6 @@ impl ProjectManager {
         Ok(file_path)
     }
 
-    /// Prompts a native file dialog to import one or more files into `target_folder`.
-    ///
-    /// Validates destination paths and file names to prevent directory escape during import.
     pub fn import_files_dialog(&mut self) -> Result<usize, String> {
         let _ = self.ensure_within_root(&self.target_folder, true)?;
         let files = rfd::FileDialog::new()

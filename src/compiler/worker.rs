@@ -1,8 +1,4 @@
-//! # Asynchronous Compilation Worker Thread
-//!
-//! Provides [`CompilerWorker`], a background worker thread that receives compilation tasks,
-//! debounces rapid keystroke events (350ms window), executes compilation out-of-process or
-//! via the native engine, and delivers results through channels without blocking the UI.
+//! Background compiler thread that debounces compilation and sends results via channels.
 
 #![allow(dead_code)]
 
@@ -14,31 +10,19 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// A compilation job queued for processing.
 pub struct CompileTask {
-    /// Unique monotonically increasing task identifier
     pub id: u64,
-    /// LaTeX document source code
     pub source: String,
-    /// Compiler engine backend to invoke
     pub engine: EngineKind,
-    /// Optional working directory for resolving images, inputs, and relative assets
     pub work_dir: Option<PathBuf>,
-    /// Optional document file name used to name the output PDF
     pub doc_name: Option<String>,
-    /// Whether external TeX engines may execute with `-shell-escape`
     pub allow_shell_escape: bool,
-    /// Optional dirty subdocument `(child_path, unsaved_content)` to stage via a shadow file
     pub shadow_subdocument: Option<(PathBuf, String)>,
-    /// Creation instant used for debouncing
     pub timestamp: Instant,
 }
 
-/// Compilation result message returned by the worker thread.
 pub struct CompileOutput {
-    /// Identifier matching the original [`CompileTask`]
     pub id: u64,
-    /// Outcome of the compilation
     pub result: std::result::Result<CompileResult, String>,
 }
 

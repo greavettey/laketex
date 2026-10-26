@@ -68,20 +68,14 @@ pub struct RenderDebugItem {
     pub suggested_fix: String,
 }
 
-/// Comprehensive audit report of rendering flaws across a document.
+/// Audit report of rendering issues across a document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderDebugReport {
-    /// Document file name or title
     pub document_name: String,
-    /// Generation timestamp string
     pub timestamp: String,
-    /// Total source code lines analyzed
     pub total_lines: usize,
-    /// Total rendering issues identified
     pub total_issues: usize,
-    /// Fatal rendering errors
     pub error_count: usize,
-    /// Formatting warnings
     pub warning_count: usize,
     /// Degraded or unhandled commands
     pub degraded_count: usize,
@@ -210,7 +204,7 @@ impl RenderDebugReport {
 pub struct RenderDebugger;
 
 impl RenderDebugger {
-    /// Comprehensive scan of LaTeX source text and optional PDF preview bytes.
+    /// Scans LaTeX source text and optional PDF preview bytes for common issues.
     pub fn scan(source: &str, document_name: &str, pdf_bytes: Option<&[u8]>) -> RenderDebugReport {
         let lines: Vec<&str> = source.lines().collect();
         let total_lines = lines.len();

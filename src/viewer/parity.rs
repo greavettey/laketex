@@ -1,14 +1,4 @@
-//! # Visual Parity Comparison & Automated Benchmarking
-//!
-//! Provides automated visual parity testing between the LakeTex pure-Rust native engine
-//! and reference TeX compilers (such as Tectonic).
-//!
-//! Workflow:
-//! 1. Compiles identical LaTeX document source through both engines.
-//! 2. Rasterizes both resulting PDF byte streams into identical-dimension RGB pixel buffers.
-//! 3. Calculates per-pixel delta matrices, Mean Squared Error (MSE), and Peak Signal-to-Noise Ratio (PSNR).
-//! 4. Generates side-by-side comparison images and high-visibility magenta discrepancy heatmaps.
-//! 5. Emits structured JSON parity reports ([`VisualParityReport`]).
+//! Compares PDF outputs between engines (e.g. native draft vs Tectonic).
 
 use crate::compiler::engine::{CompilerEngine, EngineKind};
 use crate::error::{LakeTexError, Result};
@@ -17,26 +7,16 @@ use egui::{Color32, ColorImage};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Metrics report comparing visual fidelity between two compilation outputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualParityReport {
-    /// Name or title of the tested document
     pub document_name: String,
-    /// 1-based page index compared
     pub page_number: usize,
-    /// Requested raster target width in pixels
     pub target_width_px: u32,
-    /// Final aligned width in pixels
     pub rendered_width_px: usize,
-    /// Final aligned height in pixels
     pub rendered_height_px: usize,
-    /// Total pixels evaluated
     pub total_pixels: usize,
-    /// Number of matching pixels within perceptual threshold
     pub matching_pixels: usize,
-    /// Number of mismatching pixels
     pub mismatch_pixels: usize,
-    /// Visual parity score percentage (0.0% to 100.0%)
     pub visual_parity_score: f32,
     /// Mean Squared Error across color channels
     pub mean_squared_error: f64,

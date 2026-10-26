@@ -1,11 +1,4 @@
-//! # Code Editor Panel
-//!
-//! Provides the primary LaTeX source code editor ([`EditorPanel`]) with:
-//! - Syntax highlighting via [`LatexLexer`]
-//! - Line numbers and error marker gutters
-//! - Integrated Search and Replace (`Ctrl+F` / `Ctrl+H`)
-//! - Auto-scrolling and caret focusing on SyncTeX jumps from the outline or PDF preview
-//! - Zoomable font size controls
+//! Source code editor panel, find/replace bar, and line numbers.
 
 use crate::compiler::Diagnostic;
 use crate::document::lexer::{ActiveBracketMatch, BracketTree, LatexLexer};
@@ -13,28 +6,17 @@ use crate::t;
 use egui::{vec2, Align, Align2, Color32, FontId, Key, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-/// Search and replace state for the editor.
 #[derive(Debug, Clone, Default)]
 pub struct FindReplaceState {
-    /// Whether the search bar is currently visible
     pub is_open: bool,
-    /// Whether replace controls are visible
     pub show_replace: bool,
-    /// Query string to search for
     pub search_query: String,
-    /// Replacement string
     pub replace_text: String,
-    /// Case sensitive search toggle
     pub case_sensitive: bool,
-    /// Match whole words only toggle
     pub whole_word: bool,
-    /// Index of currently selected match (0-based)
     pub current_match_idx: usize,
-    /// Cached matches: list of (char_start, char_end) ranges
     pub matches: Vec<(usize, usize)>,
-    /// Match count or status string (e.g. "2 of 5", "No matches", "Replaced 3 match(es)")
     pub status: String,
-    /// Flag requesting keyboard focus on the search input box
     pub focus_input: bool,
 }
 

@@ -1,14 +1,4 @@
-//! # LakeTex Graphical User Interface (GUI)
-//!
-//! Provides the primary desktop application interface built using `eframe` and `egui`.
-//!
-//! Orchestrates:
-//! - Top action toolbar with compilation triggers and dynamic theme selection ([`toolbar`])
-//! - Split editor panel with syntax highlighting and SyncTeX positioning ([`editor_panel`])
-//! - Collapsible navigation sidebar ([`sidebar`])
-//! - Slide-up diagnostic console drawer ([`drawer`])
-//! - Dual-mode vector/PDF live document viewer ([`viewer_panel`])
-//! - Key-value color theming engine ([`theme`])
+//! Main application window layout and event loop.
 
 pub mod config;
 pub mod drawer;

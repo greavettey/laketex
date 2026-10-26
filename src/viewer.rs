@@ -1,9 +1,4 @@
-//! # PDF Document Viewer & Rasterization Subsystem
-//!
-//! Provides [`PdfRenderer`] for binding Google PDFium to rasterize compiled PDF pages into
-//! high-DPI `egui::ColorImage` bitmaps with optional color inversion (dark mode), as well
-//! as the interactive canvas widget ([`canvas::PdfCanvas`]) and visual parity comparison
-//! harness ([`parity::VisualParityComparator`]).
+//! PDF rasterization and viewer widgets.
 
 pub mod canvas;
 pub mod color_mode;
@@ -20,14 +15,13 @@ use std::sync::{Arc, OnceLock};
 
 static GLOBAL_PDFIUM: OnceLock<std::result::Result<Arc<Pdfium>, String>> = OnceLock::new();
 
-/// High-DPI PDF rasterization engine powered by Google PDFium.
+/// PDF rasterizer using pdfium.
 #[derive(Clone, Default)]
 pub struct PdfRenderer;
 
 impl PdfRenderer {
-    /// Initializes PDFium lazily in a background thread for instant (<1ms) application startup.
+    /// Warms up pdfium in a background thread.
     pub fn new() -> Self {
-        // Trigger background initialization so PDFium is warm when compilation completes
         std::thread::Builder::new()
             .name("pdfium-loader".to_string())
             .spawn(|| {

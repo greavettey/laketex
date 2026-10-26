@@ -1,37 +1,18 @@
-//! # Interactive Document Canvas
-//!
-//! Provides [`PdfCanvas`], an interactive scrollable canvas widget for inspecting compiled
-//! PDF pages.
-//!
-//! Features:
-//! - Smooth zooming, panning, and automatic width-fitting (`fit_to_width`)
-//! - Academic high-contrast color inversion for dark mode
-//! - Persistent texture caching (never blanks out during transient compilation errors)
-//! - Double-click backward SyncTeX navigation returning normalized vertical coordinates
+//! Interactive scrollable preview canvas for rasterized PDF pages.
 
 use crate::viewer::{PdfColorMode, PdfRenderer};
 use egui::{vec2, Color32, Pos2, Rect, ScrollArea, Stroke, TextureHandle, TextureOptions, Ui};
 
-/// Interactive canvas for viewing rasterized PDF pages.
 pub struct PdfCanvas {
-    /// 0-based index of current page being viewed
     pub current_page: usize,
-    /// Total pages in document
     pub total_pages: usize,
-    /// Zoom scale factor (1.0 = 100%)
     pub zoom: f32,
-    /// Active color rendering mode
     pub color_mode: PdfColorMode,
-    /// True if dark mode color inversion is enabled (synced with color_mode)
     pub invert_colors: bool,
-    /// Base rasterization target width in pixels (e.g. 1000, 1200, 1600, 2000)
     pub base_render_width: u16,
-    /// True if automatic width fitting is active
     pub fit_to_width: bool,
 
-    /// Cached rendered texture
     pub texture: Option<TextureHandle>,
-    /// Last error encountered during rasterization
     pub last_error: Option<String>,
     last_rendered_page: Option<usize>,
     last_rendered_zoom: Option<f32>,
