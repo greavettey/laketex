@@ -20,7 +20,7 @@ jobs:
       - name: Generate Rust Wiki Docs
         uses: tristanpoland/RustDoc-GH-Wiki@0.0.6
         with:
-          token: ${{ secrets.LAKETEX_UPDATE_DOCUMENTATION_ACTION }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           # Optional customizations:
           # source_path: 'src'
           # wiki_path: 'wiki-content'
