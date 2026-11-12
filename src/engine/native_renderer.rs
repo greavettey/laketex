@@ -26,19 +26,19 @@ impl NativePageRenderer {
         } else {
             PdfColorMode::Normal
         };
-        Self::render_page_ui_with_mode(ui, page, mode, zoom)
+        Self::render_page_ui_with_mode(ui, page, mode, zoom).map(|(l, _)| l)
     }
 
     /// Renders a typeset page onto the UI canvas supporting Normal, Dark, and Sepia modes.
     ///
-    /// Returns `Some(source_line)` if the user double-clicked an element on this page,
+    /// Returns `Some((source_line, column))` if the user double-clicked an element on this page,
     /// triggering backward SyncTeX navigation.
     pub fn render_page_ui_with_mode(
         ui: &mut Ui,
         page: &TypesetPage,
         color_mode: PdfColorMode,
         zoom: f32,
-    ) -> Option<usize> {
+    ) -> Option<(usize, usize)> {
         let display_width = page.width * zoom;
         let display_height = page.height * zoom;
         let margin_zoom = page.margin * zoom;
@@ -64,7 +64,7 @@ impl NativePageRenderer {
         };
         let is_dark = color_mode.is_dark();
 
-        let mut double_clicked_line = None;
+        let mut double_clicked_location = None;
         let margin_i8 = (margin_zoom as i32).clamp(0, 120) as i8;
 
         // Outer page container with drop shadow
@@ -227,6 +227,7 @@ impl NativePageRenderer {
                             headers,
                             rows,
                             has_booktabs,
+                            ..
                         } => {
                             ui.vertical_centered(|ui| {
                                 if *has_booktabs {
@@ -385,15 +386,18 @@ impl NativePageRenderer {
         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
             if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 if page_rect.contains(pos) {
+                    let rel_x = ((pos.x - page_rect.left()) / page_rect.width()).clamp(0.0, 1.0);
                     let rel_y_unzoomed = ((pos.y - page_rect.top()) / zoom) - page.margin;
-                    if let Some(el) = page.find_element_at_y(rel_y_unzoomed) {
-                        double_clicked_line = Some(el.source_line);
+                    if let Some((el, offset_in_el)) = page.find_element_at_y(rel_y_unzoomed) {
+                        let line = el.line_at_offset(offset_in_el);
+                        let col = el.column_at_offset(rel_x, offset_in_el, page.width, None);
+                        double_clicked_location = Some((line, col));
                     }
                 }
             }
         }
 
-        double_clicked_line
+        double_clicked_location
     }
 
     /// Constructs a wrapped `egui::text::LayoutJob` from inline spans for rich typographic layout.

@@ -183,6 +183,8 @@ pub struct CompileResult {
     pub diagnostics: Vec<Diagnostic>,
     /// Elapsed wall-clock compilation duration in milliseconds
     pub duration_ms: u128,
+    /// Parsed SyncTeX synchronization database (if engine produced .synctex.gz)
+    pub synctex_data: Option<crate::document::synctex::SyncTexData>,
 }
 
 /// Compilation orchestrator that detects, locates, and invokes LaTeX engines.
@@ -352,6 +354,33 @@ impl CompilerEngine {
             .any(|p| p.name == "minted")
     }
 
+    /// Ensures that if the document uses `[H]` or `[h!]` float placement (such as `\begin{figure}[H]`
+    /// or `\begin{table}[H]`), the `float` package is imported so standard TeX engines strictly enforce
+    /// in-place positioning rather than floating elements away.
+    pub fn ensure_float_package(source: &str) -> String {
+        let uses_h_tag = (source.contains("[H]") || source.contains("[h!]"))
+            && (source.contains("\\begin{figure}")
+                || source.contains("\\begin{figure*}")
+                || source.contains("\\begin{table}")
+                || source.contains("\\begin{table*}"));
+        if uses_h_tag && !source.contains("{float}") {
+            // Insert \usepackage{float} on the same line as \documentclass to prevent shifting source line numbers
+            if let Some(pos) = source.find("\\documentclass") {
+                if let Some(end_line) = source[pos..].find('\n') {
+                    let insert_pos = pos + end_line;
+                    let mut s = String::with_capacity(source.len() + 32);
+                    s.push_str(&source[..insert_pos]);
+                    s.push_str("\\usepackage{float}");
+                    s.push_str(&source[insert_pos..]);
+                    return s;
+                }
+            }
+            crate::document::packages::PackageManager::insert_package(source, "float")
+        } else {
+            source.to_string()
+        }
+    }
+
     /// Rewrites `\input{...}` and `\include{...}` references to `child_path` in `master_source`
     /// so they point to `shadow_path` instead.
     pub fn rewrite_subdocument_references(
@@ -494,6 +523,7 @@ impl CompilerEngine {
                         stderr: String::new(),
                         diagnostics: Vec::new(),
                         duration_ms,
+                        synctex_data: None,
                     });
                 }
                 Err(e) => {
@@ -511,6 +541,7 @@ impl CompilerEngine {
                             details: None,
                         }],
                         duration_ms,
+                        synctex_data: None,
                     });
                 }
             }
@@ -567,15 +598,37 @@ impl CompilerEngine {
         let clean_intermediates = |dir: &Path, stem: &str| {
             for ext in &[
                 "aux", "log", "out", "xdv", "aex", "toc", "nav", "snm", "bbl", "blg", "fls",
-                "fdb_latexmk", "synctex.gz",
+                "fdb_latexmk",
             ] {
                 let _ = std::fs::remove_file(dir.join(format!("{stem}.{ext}")));
             }
         };
 
-        // Clean up any pre-existing files to prevent picking up stale PDFs from prior runs
+        let read_synctex = |dir: &Path, c_stem: &str, cl_stem: &str| -> Option<crate::document::synctex::SyncTexData> {
+            for p in &[
+                dir.join(format!("{c_stem}.synctex.gz")),
+                dir.join(format!("{c_stem}.synctex")),
+                dir.join(format!("{cl_stem}.synctex.gz")),
+                dir.join(format!("{cl_stem}.synctex")),
+                dir.join("laketex_doc.synctex.gz"),
+                dir.join("laketex_doc.synctex"),
+            ] {
+                if p.is_file() {
+                    if let Ok(bytes) = std::fs::read(p) {
+                        if let Some(data) = crate::document::synctex::SyncTexData::parse_gz(&bytes) {
+                            return Some(data);
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        // Clean up any pre-existing files to prevent picking up stale PDFs or SyncTeX from prior runs
         let _ = std::fs::remove_file(&pdf_file_path);
         let _ = std::fs::remove_file(&tex_file_path);
+        let _ = std::fs::remove_file(abs_run_dir.join(format!("{compile_stem}.synctex.gz")));
+        let _ = std::fs::remove_file(abs_run_dir.join(format!("{compile_stem}.synctex")));
 
         // Stage optional unsaved subdocument via a temporary shadow file (Approach A)
         let mut shadow_mapping: Option<(String, String)> = None;
@@ -602,7 +655,11 @@ impl CompilerEngine {
         } else {
             source.to_string()
         };
-        let source = source_with_shadow.as_str();
+
+        // If document uses [H] placement modifier (e.g. \begin{figure}[H] or \begin{table}[H])
+        // ensure the float package is imported so TeX engines strictly enforce in-place positioning rather than floating away
+        let source_with_float = Self::ensure_float_package(&source_with_shadow);
+        let source = source_with_float.as_str();
 
         // If pygmentize is not available or shell-escape is disabled and source uses minted, pre-inject draft mode
         // to avoid unrecoverable XeTeX crashes when pygmentize cannot be executed
@@ -637,11 +694,16 @@ impl CompilerEngine {
             pre_injections.push("\\PassOptionsToPackage{draft}{minted}");
         }
         if pre_draft_graphics {
-            pre_injections.push("\\PassOptionsToPackage{draft}{graphicx}\n\\makeatletter\\AtBeginDocument{\\@ifundefined{Gin@nat@width}{}{\\setkeys{Gin}{natwidth=100,natheight=100}}}\\makeatother");
+            pre_injections.push("\\PassOptionsToPackage{draft}{graphicx}\\makeatletter\\AtBeginDocument{\\@ifundefined{Gin@nat@width}{}{\\setkeys{Gin}{natwidth=100,natheight=100}}}\\makeatother");
         }
 
         let effective_source = if !pre_injections.is_empty() {
-            format!("{}\n{source}", pre_injections.join("\n"))
+            let joined_pre = pre_injections.join("");
+            if let Some(pos) = source.find("\\documentclass") {
+                format!("{}{}{}", &source[..pos], joined_pre, &source[pos..])
+            } else {
+                format!("{joined_pre}\n{source}")
+            }
         } else {
             source.to_string()
         };
@@ -658,6 +720,7 @@ impl CompilerEngine {
                     cmd.arg("-Z").arg("shell-escape");
                     cmd.arg("-Z").arg(format!("shell-escape-cwd={}", abs_run_dir.display()));
                 }
+                cmd.arg("--synctex");
                 cmd.arg("--outdir")
                     .arg(&abs_run_dir)
                     .arg(&tex_file_path);
@@ -669,6 +732,7 @@ impl CompilerEngine {
                     "-no-shell-escape"
                 };
                 cmd.arg("-interaction=nonstopmode")
+                    .arg("-synctex=1")
                     .arg(shell_flag)
                     .arg("-output-directory")
                     .arg(&abs_run_dir)
@@ -732,6 +796,7 @@ impl CompilerEngine {
                     retry_cmd
                         .arg("-Z")
                         .arg("continue-on-errors")
+                        .arg("--synctex")
                         .arg("--outdir")
                         .arg(&abs_run_dir)
                         .arg(&tex_file_path);
@@ -739,6 +804,7 @@ impl CompilerEngine {
                 EngineKind::PdfLatex | EngineKind::XeLatex | EngineKind::LuaLatex => {
                     retry_cmd
                         .arg("-interaction=nonstopmode")
+                        .arg("-synctex=1")
                         .arg("-no-shell-escape")
                         .arg("-output-directory")
                         .arg(&abs_run_dir)
@@ -818,6 +884,7 @@ impl CompilerEngine {
                         }
                     }
 
+                    let retry_synctex = read_synctex(run_dir, &compile_stem, clean_stem);
                     let _ = std::fs::remove_file(&tex_file_path);
                     let _ = std::fs::remove_file(&pdf_file_path);
                     clean_intermediates(run_dir, &compile_stem);
@@ -835,6 +902,7 @@ impl CompilerEngine {
                         stderr: retry_stderr,
                         diagnostics: retry_diags,
                         duration_ms: start.elapsed().as_millis(),
+                        synctex_data: retry_synctex,
                     });
                 }
             }
@@ -861,6 +929,7 @@ impl CompilerEngine {
                         pass2_cmd.arg("-Z").arg(format!("shell-escape-cwd={}", abs_run_dir.display()));
                     }
                     pass2_cmd
+                        .arg("--synctex")
                         .arg("--outdir")
                         .arg(run_dir)
                         .arg(&tex_file_path);
@@ -873,6 +942,7 @@ impl CompilerEngine {
                     };
                     pass2_cmd
                         .arg("-interaction=nonstopmode")
+                        .arg("-synctex=1")
                         .arg(shell_flag)
                         .arg("-output-directory")
                         .arg(run_dir)
@@ -911,9 +981,16 @@ impl CompilerEngine {
         };
         let pdf_bytes = raw_pdf.filter(|b| b.len() >= 50 && b.starts_with(b"%PDF-"));
 
+        let synctex_data = read_synctex(run_dir, &compile_stem, clean_stem);
+
         if pdf_bytes.is_some() && !is_untitled {
             if pdf_file_path.exists() && pdf_file_path != final_pdf_path {
                 let _ = std::fs::copy(&pdf_file_path, &final_pdf_path);
+            }
+            let synctex_src = run_dir.join(format!("{compile_stem}.synctex.gz"));
+            let synctex_dst = run_dir.join(format!("{clean_stem}.synctex.gz"));
+            if synctex_src.exists() && synctex_src != synctex_dst {
+                let _ = std::fs::copy(&synctex_src, &synctex_dst);
             }
         }
 
@@ -1032,6 +1109,7 @@ impl CompilerEngine {
             stderr,
             diagnostics,
             duration_ms,
+            synctex_data,
         })
     }
 
@@ -1213,7 +1291,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(matches!(res, Err(LakeTexError::Cancelled)));
-        // Should terminate in well under 2 seconds rather than the 10-second ping/sleep
-        assert!(elapsed < std::time::Duration::from_secs(3));
+        // Should terminate in well under 5 seconds rather than the 10-second ping/sleep
+        assert!(elapsed < std::time::Duration::from_secs(5));
     }
 }

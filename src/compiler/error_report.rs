@@ -188,14 +188,33 @@ impl ErrorReport {
         // Scan backwards for innermost environment or section
         let mut last_env = None;
         let mut last_section = None;
+        let mut closed_envs: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         for idx in (0..=target_idx).rev() {
             let l = lines[idx].trim();
-            if last_env.is_none() && l.starts_with("\\begin{") {
-                if let Some(end) = l.find('}') {
-                    let env_name = &l[7..end];
+
+            // Track closed environments (\end{...}) so we don't attribute lines after \end{env} to \begin{env}
+            if let Some(pos) = l.find("\\end{") {
+                if let Some(end) = l[pos + 5..].find('}') {
+                    let env_name = &l[pos + 5..pos + 5 + end];
                     if env_name != "document" {
-                        last_env = Some(env_name.to_string());
+                        *closed_envs.entry(env_name.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            if last_env.is_none() {
+                if let Some(pos) = l.find("\\begin{") {
+                    if let Some(end) = l[pos + 7..].find('}') {
+                        let env_name = &l[pos + 7..pos + 7 + end];
+                        if env_name != "document" {
+                            let count = closed_envs.entry(env_name.to_string()).or_insert(0);
+                            if *count > 0 {
+                                *count -= 1;
+                            } else {
+                                last_env = Some(env_name.to_string());
+                            }
+                        }
                     }
                 }
             }
@@ -207,8 +226,8 @@ impl ErrorReport {
                     || l.starts_with("\\chapter{"))
             {
                 if let Some(start) = l.find('{') {
-                    if let Some(end) = l.find('}') {
-                        let sec_title = &l[start + 1..end];
+                    if let Some(end) = l[start + 1..].find('}') {
+                        let sec_title = &l[start + 1..start + 1 + end];
                         last_section = Some(sec_title.to_string());
                     }
                 }
@@ -264,6 +283,11 @@ impl ErrorReport {
             (
                 "PDF Bookmark Warning (hyperref)".to_string(),
                 "Math mode symbols or formatting macros were used inside a section heading. Hyperref cannot embed raw math into plain-text PDF bookmarks. Wrap the math with '\\texorpdfstring{$math$}{plain text fallback}' (e.g., '\\section{Gain \\texorpdfstring{$A_v$}{Av}}').".to_string(),
+            )
+        } else if msg.contains("fancyverb") || msg.contains("no verbatim file") {
+            (
+                "Missing Verbatim / Minted Source File".to_string(),
+                "A file referenced by '\\inputminted' or '\\VerbatimInput' could not be found. Check that the source file exists at the specified relative path or copy it into your project directory.".to_string(),
             )
         } else if msg.contains("minted") || msg.contains("shell-escape") || msg.contains("pygmentize") {
             (

@@ -157,8 +157,14 @@ impl FindReplaceState {
 pub struct EditorPanel {
     /// Pending 1-based line target for programmatic scrolling and caret positioning
     pub target_scroll_line: Option<usize>,
+    /// Pending (1-based line, 0-based column) target for micro-precise SyncTeX positioning
+    pub target_location: Option<(usize, usize)>,
+    /// Pending exact 0-based character index to jump caret to
+    pub target_char: Option<usize>,
     /// Pending character range to highlight / select
     pub target_selection: Option<(usize, usize)>,
+    /// Persistent editor highlight corresponding to active PDF text selection
+    pub preview_sync_highlight: Option<(usize, usize)>,
     /// Last known character range of the cursor/caret in the editor
     pub last_cursor_range: Option<(usize, usize)>,
     /// Editor monospace font size in points
@@ -177,7 +183,10 @@ impl Default for EditorPanel {
     fn default() -> Self {
         Self {
             target_scroll_line: None,
+            target_location: None,
+            target_char: None,
             target_selection: None,
+            preview_sync_highlight: None,
             last_cursor_range: None,
             font_size: 13.5,
             find_replace: FindReplaceState::default(),
@@ -194,9 +203,23 @@ impl EditorPanel {
         Self::default()
     }
 
-    /// Requests that the editor smoothly scroll and place the caret at `line`.
+    /// Requests that the editor smoothly scroll and place the caret at `line` (column 0).
     pub fn jump_to_line(&mut self, line: usize) {
+        self.jump_to_location(line, 0);
+    }
+
+    /// Requests that the editor smoothly scroll and place the caret at `line` and `column` (0-based character offset).
+    pub fn jump_to_location(&mut self, line: usize, column: usize) {
+        self.target_location = Some((line, column));
         self.target_scroll_line = Some(line);
+    }
+
+    /// Requests that the editor scroll and place the caret at exact 0-based character index `char_idx`.
+    pub fn jump_to_char(&mut self, char_idx: usize) {
+        self.target_char = Some(char_idx);
+        self.target_selection = None;
+        self.target_location = None;
+        self.target_scroll_line = None;
     }
 
     /// Inserts a snippet into content at the current caret or selection position,
@@ -693,7 +716,20 @@ impl EditorPanel {
 
         let mut scroll_target_range: Option<(usize, usize)> = None;
 
-        if let Some((start_c, end_c)) = self.target_selection.take() {
+        if let Some(target_c) = self.target_char.take() {
+            let clamped = target_c.min(content.chars().count());
+            let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
+            state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(
+                egui::text::CCursor::new(clamped),
+            )));
+            state.store(ui.ctx(), editor_id);
+            scroll_target_range = Some((clamped, clamped));
+            self.last_cursor_range = Some((clamped, clamped));
+            self.preview_sync_highlight = None;
+            if !self.find_replace.is_open {
+                ui.ctx().memory_mut(|mem| mem.request_focus(editor_id));
+            }
+        } else if let Some((start_c, end_c)) = self.target_selection.take() {
             let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
             state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::two(
                 egui::text::CCursor::new(start_c),
@@ -704,21 +740,50 @@ impl EditorPanel {
             self.target_scroll_line = None;
             // Crucial: Do NOT request focus on editor_id here!
             // When navigating or typing search terms, focus MUST remain in the search input box.
-        } else if let Some(target_line) = self.target_scroll_line.take() {
-            let mut char_idx = 0;
-            if target_line > 1 {
+        } else if let Some((target_line, target_col)) = self.target_location.take().or_else(|| self.target_scroll_line.take().map(|l| (l, 0))) {
+            self.target_scroll_line = None;
+            let mut line_start_idx = 0;
+            let mut line_len = 0;
+            let mut found_line = false;
+
+            if target_line <= 1 {
+                found_line = true;
+                for ch in content.chars() {
+                    if ch == '\n' {
+                        break;
+                    }
+                    if ch != '\r' {
+                        line_len += 1;
+                    }
+                }
+            } else {
                 let mut current_line = 1;
                 for (idx, ch) in content.chars().enumerate() {
                     if ch == '\n' {
                         current_line += 1;
                         if current_line == target_line {
-                            char_idx = idx + 1;
+                            line_start_idx = idx + 1;
+                            found_line = true;
+                            for ch_after in content.chars().skip(idx + 1) {
+                                if ch_after == '\n' {
+                                    break;
+                                }
+                                if ch_after != '\r' {
+                                    line_len += 1;
+                                }
+                            }
                             break;
                         }
                     }
                 }
             }
-            char_idx = char_idx.min(content.chars().count());
+
+            let col_clamped = if found_line {
+                target_col.min(line_len)
+            } else {
+                0
+            };
+            let char_idx = (line_start_idx + col_clamped).min(content.chars().count());
 
             let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
             state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(egui::text::CCursor::new(char_idx))));
@@ -785,10 +850,13 @@ impl EditorPanel {
 
                 if output.response.changed() {
                     text_changed = true;
+                    self.preview_sync_highlight = None;
                     let mut h = DefaultHasher::new();
                     content.hash(&mut h);
                     self.cached_bracket_hash = Some(h.finish());
                     self.cached_bracket_tree = BracketTree::parse(content);
+                } else if output.response.clicked() {
+                    self.preview_sync_highlight = None;
                 }
 
                 // Update last known cursor range from output or TextEditState
@@ -906,71 +974,67 @@ impl EditorPanel {
                     }
                 }
 
+                // Highlight code chunk corresponding to active PDF text selection
+                if let Some((start_char, end_char)) = self.preview_sync_highlight {
+                    let (fill_color, stroke_color) = if is_dark {
+                        (
+                            Color32::from_rgba_unmultiplied(66, 133, 244, 80),
+                            Color32::from_rgb(97, 175, 239),
+                        )
+                    } else {
+                        (
+                            Color32::from_rgba_unmultiplied(66, 133, 244, 65),
+                            Color32::from_rgb(37, 99, 235),
+                        )
+                    };
+                    Self::paint_char_range_highlight(
+                        ui.painter(),
+                        &output.galley,
+                        output.galley_pos,
+                        clip_rect,
+                        start_char,
+                        end_char,
+                        fill_color,
+                        Some(Stroke::new(1.0_f32, stroke_color)),
+                    );
+                }
+
                 // Highlight occurrences in Find & Replace modal
                 if self.find_replace.is_open && !self.find_replace.matches.is_empty() {
                     let current_idx = self.find_replace.current_match_idx.min(self.find_replace.matches.len().saturating_sub(1));
 
                     for (idx, &(start_char, end_char)) in self.find_replace.matches.iter().enumerate() {
                         let is_current = idx == current_idx;
-                        let c1 = egui::text::CCursor::new(start_char);
-                        let c2 = egui::text::CCursor::new(end_char);
-                        let cur1 = output.galley.from_ccursor(c1);
-                        let cur2 = output.galley.from_ccursor(c2);
-                        let range = egui::text_selection::CursorRange::two(cur1, cur2);
-                        let [min, max] = range.sorted_cursors();
-
-                        for ri in min.rcursor.row..=max.rcursor.row {
-                            if ri >= output.galley.rows.len() {
-                                break;
-                            }
-                            let row = &output.galley.rows[ri];
-                            let left = if ri == min.rcursor.row {
-                                row.x_offset(min.rcursor.column)
+                        let (fill_color, stroke) = if is_current {
+                            let fill = if is_dark {
+                                Color32::from_rgba_unmultiplied(255, 170, 0, 110)
                             } else {
-                                row.rect.left()
+                                Color32::from_rgba_unmultiplied(255, 160, 0, 130)
                             };
-                            let right = if ri == max.rcursor.row {
-                                row.x_offset(max.rcursor.column)
+                            let stroke_color = if is_dark {
+                                Color32::from_rgb(255, 215, 0)
                             } else {
-                                row.rect.right()
+                                Color32::from_rgb(220, 120, 0)
                             };
-
-                            let match_rect = Rect::from_min_max(
-                                Pos2::new(left, row.min_y()),
-                                Pos2::new(right, row.max_y()),
-                            ).translate(output.galley_pos.to_vec2());
-
-                            if match_rect.intersects(clip_rect) {
-                                if is_current {
-                                    // Current active match: vibrant amber highlight box with crisp golden border
-                                    let fill_color = if is_dark {
-                                        Color32::from_rgba_unmultiplied(255, 170, 0, 110)
-                                    } else {
-                                        Color32::from_rgba_unmultiplied(255, 160, 0, 130)
-                                    };
-                                    let stroke_color = if is_dark {
-                                        Color32::from_rgb(255, 215, 0)
-                                    } else {
-                                        Color32::from_rgb(220, 120, 0)
-                                    };
-                                    ui.painter().rect(
-                                        match_rect.expand(1.0),
-                                        2.0,
-                                        fill_color,
-                                        Stroke::new(1.5_f32, stroke_color),
-                                        StrokeKind::Outside,
-                                    );
-                                } else {
-                                    // Other matches: subtle translucent highlight
-                                    let fill_color = if is_dark {
-                                        Color32::from_rgba_unmultiplied(255, 220, 50, 45)
-                                    } else {
-                                        Color32::from_rgba_unmultiplied(255, 200, 0, 60)
-                                    };
-                                    ui.painter().rect_filled(match_rect.expand(0.5), 1.5, fill_color);
-                                }
-                            }
-                        }
+                            (fill, Some(Stroke::new(1.5_f32, stroke_color)))
+                        } else {
+                            let fill = if is_dark {
+                                Color32::from_rgba_unmultiplied(255, 220, 50, 45)
+                            } else {
+                                Color32::from_rgba_unmultiplied(255, 200, 0, 60)
+                            };
+                            (fill, None)
+                        };
+                        Self::paint_char_range_highlight(
+                            ui.painter(),
+                            &output.galley,
+                            output.galley_pos,
+                            clip_rect,
+                            start_char,
+                            end_char,
+                            fill_color,
+                            stroke,
+                        );
                     }
                 }
 
@@ -1084,6 +1148,55 @@ impl EditorPanel {
         }
 
         text_changed
+    }
+
+    fn paint_char_range_highlight(
+        painter: &egui::Painter,
+        galley: &egui::Galley,
+        galley_pos: Pos2,
+        clip_rect: Rect,
+        start_char: usize,
+        end_char: usize,
+        fill_color: Color32,
+        stroke: Option<Stroke>,
+    ) {
+        let c1 = egui::text::CCursor::new(start_char);
+        let c2 = egui::text::CCursor::new(end_char);
+        let cur1 = galley.from_ccursor(c1);
+        let cur2 = galley.from_ccursor(c2);
+        let range = egui::text_selection::CursorRange::two(cur1, cur2);
+        let [min, max] = range.sorted_cursors();
+
+        for ri in min.rcursor.row..=max.rcursor.row {
+            if ri >= galley.rows.len() {
+                break;
+            }
+            let row = &galley.rows[ri];
+            let left = if ri == min.rcursor.row {
+                row.x_offset(min.rcursor.column)
+            } else {
+                row.rect.left()
+            };
+            let right = if ri == max.rcursor.row {
+                row.x_offset(max.rcursor.column)
+            } else {
+                row.rect.right()
+            };
+
+            let match_rect = Rect::from_min_max(
+                Pos2::new(left, row.min_y()),
+                Pos2::new(right, row.max_y()),
+            )
+            .translate(galley_pos.to_vec2());
+
+            if match_rect.intersects(clip_rect) {
+                if let Some(s) = stroke {
+                    painter.rect(match_rect.expand(1.0), 2.0, fill_color, s, StrokeKind::Outside);
+                } else {
+                    painter.rect_filled(match_rect.expand(0.5), 1.5, fill_color);
+                }
+            }
+        }
     }
 }
 

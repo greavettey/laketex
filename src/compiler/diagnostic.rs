@@ -165,6 +165,39 @@ impl DiagnosticParser {
                     }
                 }
 
+                // Collect multi-line continuation messages (e.g. FancyVerb Error detail lines)
+                let mut continuation_lines = Vec::new();
+                let mut j = i + 1;
+                while j < lines.len() {
+                    let next = lines[j];
+                    let next_trimmed = next.trim();
+                    if next_trimmed.is_empty() {
+                        j += 1;
+                        break;
+                    }
+                    if next_trimmed.starts_with("error:")
+                        || next_trimmed.starts_with("warning:")
+                        || next_trimmed.starts_with("note:")
+                        || next_trimmed.starts_with('!')
+                        || next_trimmed.contains("LaTeX Warning:")
+                    {
+                        break;
+                    }
+                    continuation_lines.push(next_trimmed.to_string());
+                    j += 1;
+                }
+
+                if !continuation_lines.is_empty() {
+                    let extra = continuation_lines.join(" ");
+                    if clean_msg.ends_with(':') {
+                        clean_msg = format!("{clean_msg} {extra}");
+                    } else if !clean_msg.is_empty() {
+                        clean_msg = format!("{clean_msg} - {extra}");
+                    } else {
+                        clean_msg = extra;
+                    }
+                }
+
                 diagnostics.push(Diagnostic {
                     severity: DiagnosticSeverity::Error,
                     message: clean_msg,
@@ -172,6 +205,9 @@ impl DiagnosticParser {
                     file: err_file,
                     details: None,
                 });
+
+                i = j;
+                continue;
             }
             // LaTeX Warning
             else if line.contains("LaTeX Warning:") {
@@ -223,6 +259,19 @@ impl DiagnosticParser {
             i += 1;
         }
 
-        diagnostics
+        // Deduplicate identical diagnostics across multi-pass compilation
+        let mut deduped = Vec::new();
+        for diag in diagnostics {
+            if !deduped.iter().any(|d: &Diagnostic| {
+                d.severity == diag.severity
+                    && d.message == diag.message
+                    && d.line == diag.line
+                    && d.file == diag.file
+            }) {
+                deduped.push(diag);
+            }
+        }
+
+        deduped
     }
 }

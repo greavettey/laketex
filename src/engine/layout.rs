@@ -76,6 +76,14 @@ pub enum ElementKind {
         rows: Vec<TableRow>,
         /// Whether booktabs rules are applied
         has_booktabs: bool,
+        /// Optional float placement tag (e.g. `H`, `h`, `t`, `b`)
+        placement: Option<String>,
+        /// Line number of \caption if present
+        caption_line: Option<usize>,
+        /// Line number of table header if present
+        header_line: Option<usize>,
+        /// Line numbers for each data row
+        row_lines: Vec<usize>,
     },
     /// Floated figure with caption and visual frame
     Figure {
@@ -87,6 +95,12 @@ pub enum ElementKind {
         image_path: Option<String>,
         /// Figure sequence index
         number: usize,
+        /// Optional float placement tag (e.g. `H`, `h`, `t`, `b`)
+        placement: Option<String>,
+        /// Line number of \includegraphics if present
+        image_line: Option<usize>,
+        /// Line number of \caption if present
+        caption_line: Option<usize>,
     },
     /// Syntax-highlighted code block (minted / listings / verbatim)
     CodeBlock {
@@ -124,6 +138,59 @@ impl TypesetElement {
             source_line,
         }
     }
+
+    /// Resolves the most accurate source code line given a vertical offset within this element.
+    pub fn line_at_offset(&self, offset_y: f32) -> usize {
+        match &self.kind {
+            ElementKind::Figure {
+                image_line,
+                caption_line,
+                caption,
+                ..
+            } => {
+                if caption.is_some() && offset_y > (self.height - 32.0).max(0.0) {
+                    caption_line.unwrap_or(self.source_line)
+                } else if let Some(img_l) = image_line {
+                    *img_l
+                } else {
+                    self.source_line
+                }
+            }
+            ElementKind::Table {
+                caption_line,
+                header_line,
+                row_lines,
+                caption,
+                ..
+            } => {
+                // If caption is at bottom and click is in bottom region
+                if caption.is_some() && offset_y > (self.height - 32.0).max(0.0) {
+                    caption_line.unwrap_or(self.source_line)
+                } else if !row_lines.is_empty() || header_line.is_some() {
+                    let header_h = 24.0;
+                    if offset_y <= header_h {
+                        header_line.unwrap_or(self.source_line)
+                    } else {
+                        let row_idx = ((offset_y - header_h) / 22.0) as usize;
+                        row_lines.get(row_idx).copied().unwrap_or(self.source_line)
+                    }
+                } else {
+                    self.source_line
+                }
+            }
+            _ => self.source_line,
+        }
+    }
+
+    /// Resolves an estimated character column inside `source_line` given horizontal offset `rel_x`.
+    pub fn column_at_offset(&self, rel_x: f32, _offset_y: f32, _page_width: f32, source_text: Option<&str>) -> usize {
+        let line_len = if let Some(src) = source_text {
+            src.lines().nth(self.source_line.saturating_sub(1)).map(|l| l.chars().count()).unwrap_or(80)
+        } else {
+            80
+        };
+        (((rel_x.clamp(0.0, 1.0)) * line_len as f32).round() as usize).min(line_len)
+    }
 }
 
 /// A complete physical typeset page with dimensions, margins, and placed elements.
@@ -144,17 +211,41 @@ pub struct TypesetPage {
 }
 
 impl TypesetPage {
-    /// Finds the typeset element closest to the given vertical coordinate for SyncTeX navigation
-    pub fn find_element_at_y(&self, y: f32) -> Option<&TypesetElement> {
+    /// Finds the typeset element closest to the given vertical coordinate for SyncTeX navigation,
+    /// returning the element and the relative vertical offset inside that element.
+    pub fn find_element_at_y(&self, y: f32) -> Option<(&TypesetElement, f32)> {
+        if self.elements.is_empty() {
+            return None;
+        }
+
+        // 1. Direct hit inside element bounds [y_offset, y_offset + height]
+        if let Some(el) = self.elements.iter().find(|el| y >= el.y_offset && y <= el.y_offset + el.height) {
+            return Some((el, y - el.y_offset));
+        }
+
+        // 2. Proximity: bounded distance to element interval [y_offset, y_offset + height]
         self.elements
             .iter()
-            .find(|el| y >= el.y_offset && y <= el.y_offset + el.height)
-            .or_else(|| {
-                self.elements.iter().min_by(|a, b| {
-                    let dist_a = (a.y_offset - y).abs();
-                    let dist_b = (b.y_offset - y).abs();
-                    dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
-                })
+            .min_by(|a, b| {
+                let dist_a = if y < a.y_offset {
+                    a.y_offset - y
+                } else if y > a.y_offset + a.height {
+                    y - (a.y_offset + a.height)
+                } else {
+                    0.0
+                };
+                let dist_b = if y < b.y_offset {
+                    b.y_offset - y
+                } else if y > b.y_offset + b.height {
+                    y - (b.y_offset + b.height)
+                } else {
+                    0.0
+                };
+                dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|el| {
+                let offset = (y - el.y_offset).clamp(0.0, el.height);
+                (el, offset)
             })
     }
 }
@@ -456,11 +547,16 @@ impl DocumentLayout {
                     headers,
                     rows,
                     has_booktabs,
+                    placement,
+                    caption_line,
+                    header_line,
+                    row_lines,
                     line,
                     ..
                 } => {
                     let row_count = rows.len() + 1;
-                    let table_height = (row_count as f32) * 22.0 + 32.0;
+                    let cap_h = if caption.is_some() { 24.0 } else { 0.0 };
+                    let table_height = (row_count as f32) * 22.0 + 16.0 + cap_h;
 
                     if current_y + table_height > printable_height
                         && !current_page_elements.is_empty()
@@ -483,6 +579,10 @@ impl DocumentLayout {
                             headers: headers.clone(),
                             rows: rows.clone(),
                             has_booktabs: *has_booktabs,
+                            placement: placement.clone(),
+                            caption_line: *caption_line,
+                            header_line: *header_line,
+                            row_lines: row_lines.clone(),
                         },
                         current_y,
                         table_height,
@@ -496,9 +596,15 @@ impl DocumentLayout {
                     label,
                     image_path,
                     number,
+                    placement,
+                    image_line,
+                    caption_line,
                     line,
                 } => {
-                    let fig_height = 100.0;
+                    let cap_h = if caption.is_some() { 26.0 } else { 0.0 };
+                    let img_h = if image_path.is_some() { 160.0 } else { 90.0 };
+                    let fig_height = img_h + cap_h + 16.0;
+
                     if current_y + fig_height > printable_height
                         && !current_page_elements.is_empty()
                     {
@@ -520,6 +626,9 @@ impl DocumentLayout {
                             label: label.clone(),
                             image_path: image_path.clone(),
                             number: *number,
+                            placement: placement.clone(),
+                            image_line: *image_line,
+                            caption_line: *caption_line,
                         },
                         current_y,
                         fig_height,

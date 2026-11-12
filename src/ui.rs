@@ -113,6 +113,8 @@ pub struct LakeTexApp {
     pub typeset_pages: Vec<TypesetPage>,
     /// Latest raw PDF binary bytes compiled by the active engine.
     pub latest_pdf_bytes: Option<Vec<u8>>,
+    /// Parsed SyncTeX synchronization database for exact source code navigation.
+    pub synctex_data: Option<crate::document::SyncTexData>,
     /// Structured compiler warnings, errors, and syntax diagnostics.
     pub diagnostics: Vec<Diagnostic>,
     /// Raw terminal standard output produced by the latest compilation.
@@ -202,6 +204,7 @@ impl LakeTexApp {
         canvas.set_color_mode(config.pdf_color_mode);
         canvas.set_base_render_width(config.pdf_render_width);
         canvas.fit_to_width = config.fit_to_width;
+        canvas.page_view_mode = config.page_view_mode;
 
         let compiler = CompilerWorker::new();
         crate::log_startup("new_with_state: CompilerWorker::new done");
@@ -311,6 +314,7 @@ impl LakeTexApp {
             show_drawer: false,
             typeset_pages,
             latest_pdf_bytes,
+            synctex_data: None,
             diagnostics: Vec::new(),
             raw_stdout: String::new(),
             raw_stderr: String::new(),
@@ -1391,6 +1395,7 @@ impl eframe::App for LakeTexApp {
 
                         if res.success && res.pdf_bytes.is_some() {
                             self.latest_pdf_bytes = res.pdf_bytes;
+                            self.synctex_data = res.synctex_data;
                             self.status_message = format!("Compiled in {} ms", res.duration_ms);
                         } else if !res.success {
                             self.status_message = "Compilation failed with errors".to_string();
@@ -1831,14 +1836,86 @@ impl eframe::App for LakeTexApp {
                             &self.renderer,
                             &self.typeset_pages,
                             self.latest_pdf_bytes.as_deref(),
+                            self.synctex_data.as_ref(),
+                            Some(&self.document.content),
                             &mut self.view_mode,
                             invert_colors,
                             has_errors,
                             self.document.line_count(),
                         );
                         crate::log_startup("update: ViewerPanel::show done");
-                        if let ViewerAction::JumpToLine(line) = action {
-                            self.editor_panel.jump_to_line(line);
+                        if self.config.page_view_mode != self.canvas.page_view_mode {
+                            self.config.page_view_mode = self.canvas.page_view_mode;
+                            let _ = self.config.save();
+                        }
+                        match action {
+                            ViewerAction::JumpToLocation { line, column } => {
+                                self.editor_panel.jump_to_location(line, column);
+                                ctx.request_repaint();
+                            }
+                            ViewerAction::JumpToChar(char_idx) => {
+                                self.editor_panel.jump_to_char(char_idx);
+                                self.canvas.highlight_rects.clear();
+                                ctx.request_repaint();
+                            }
+                            ViewerAction::JumpToLine(line) => {
+                                self.editor_panel.jump_to_line(line);
+                                ctx.request_repaint();
+                            }
+                            ViewerAction::SelectRange { start_char, end_char } => {
+                                self.editor_panel.target_selection = Some((start_char, end_char));
+                                self.editor_panel.preview_sync_highlight = Some((start_char, end_char));
+                                self.canvas.highlight_rects.clear();
+                                ctx.request_repaint();
+                            }
+                            ViewerAction::ClearSelection => {
+                                self.editor_panel.preview_sync_highlight = None;
+                                self.canvas.highlight_rects.clear();
+                            }
+                            ViewerAction::None => {}
+                        }
+
+                        // Bidirectional highlighting: if text is selected in the editor and canvas is not actively selecting,
+                        // project editor selection onto the PDF preview
+                        if self.canvas.text_selection.is_none() && self.canvas.selection.is_none() {
+                            if let Some((start_c, end_c)) = self.editor_panel.last_cursor_range {
+                                if start_c != end_c {
+                                    let min_c = start_c.min(end_c);
+                                    let max_c = start_c.max(end_c);
+                                    let snippet: String = self.document.content.chars().skip(min_c).take(max_c - min_c).collect();
+                                    let plain = crate::viewer::text_selection::strip_latex_macros(&snippet);
+                                    let page_idx = self.canvas.current_page;
+
+                                    let mut matched_rects = Vec::new();
+                                    if !plain.trim().is_empty() {
+                                        if let Some(layout) = self.canvas.page_text_layouts.get(page_idx).and_then(|l| l.as_ref()) {
+                                            matched_rects = layout.find_text_rects(&plain);
+                                        }
+                                    }
+
+                                    if !matched_rects.is_empty() {
+                                        self.canvas.highlight_rects = matched_rects.into_iter().map(|r| (page_idx, r)).collect();
+                                    } else if let Some(synctex) = &self.synctex_data {
+                                        let (start_line, _) = crate::document::SyncTexData::char_index_to_line_col(&self.document.content, min_c);
+                                        let (end_line, _) = crate::document::SyncTexData::char_index_to_line_col(&self.document.content, max_c);
+                                        let (page_w, page_h) = self
+                                            .canvas
+                                            .page_text_layouts
+                                            .get(page_idx)
+                                            .and_then(|l| l.as_ref())
+                                            .filter(|l| l.page_width_pt > 1.0 && l.page_height_pt > 1.0)
+                                            .map(|l| (l.page_width_pt, l.page_height_pt))
+                                            .or_else(|| self.typeset_pages.get(page_idx).map(|p| (p.width, p.height)))
+                                            .unwrap_or((612.0, 792.0));
+                                        let min_l = start_line.min(end_line);
+                                        let max_l = start_line.max(end_line);
+                                        let rects = synctex.find_rects_for_line_range(page_idx + 1, min_l, max_l, page_w, page_h);
+                                        self.canvas.highlight_rects = rects.into_iter().map(|r| (page_idx, r)).collect();
+                                    }
+                                } else if !self.canvas.highlight_rects.is_empty() {
+                                    self.canvas.highlight_rects.clear();
+                                }
+                            }
                         }
                     },
                 );
@@ -1874,6 +1951,7 @@ impl eframe::App for LakeTexApp {
             self.canvas.set_color_mode(self.config.pdf_color_mode);
             self.canvas.set_base_render_width(self.config.pdf_render_width);
             self.canvas.fit_to_width = self.config.fit_to_width;
+            self.canvas.page_view_mode = self.config.page_view_mode;
             self.auto_compile = self.config.auto_compile;
             self.status_message = "Preferences updated & saved".to_string();
             self.drawer.log_user_event(

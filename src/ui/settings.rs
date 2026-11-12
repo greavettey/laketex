@@ -10,7 +10,7 @@
 
 use crate::compiler::engine::EngineKind;
 use crate::t;
-use crate::ui::config::{format_shortcut, AppConfig};
+use crate::ui::config::{format_shortcut, AppConfig, PageViewMode};
 use crate::ui::theme::ThemeConfig;
 use crate::ui::viewer_panel::ViewMode;
 use crate::viewer::PdfColorMode;
@@ -529,6 +529,27 @@ impl SettingsModal {
                     }
                     if segmented_button(ui, &t!("viewer.native_view"), is_native) {
                         self.draft_config.view_mode = ViewMode::NativeVector;
+                    }
+                });
+            },
+        );
+
+        ui.add_space(6.0);
+
+        setting_card(
+            ui,
+            "Page Layout & Scroll Mode",
+            "Continuous vertical scroll across all rendered pages (Overleaf style) vs paged single-page view",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+                    let is_continuous = self.draft_config.page_view_mode == PageViewMode::Continuous;
+                    let is_single = self.draft_config.page_view_mode == PageViewMode::SinglePage;
+                    if segmented_button(ui, "📜 Continuous Scroll", is_continuous) {
+                        self.draft_config.page_view_mode = PageViewMode::Continuous;
+                    }
+                    if segmented_button(ui, "📄 Single Page", is_single) {
+                        self.draft_config.page_view_mode = PageViewMode::SinglePage;
                     }
                 });
             },

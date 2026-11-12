@@ -239,6 +239,7 @@ impl PackageManager {
             ("hyperref", "Extensive hypertext cross-referencing and links", "Navigation"),
             ("booktabs", "Publication-quality clean tabular rules", "Tables"),
             ("tabularx", "Tabulars with adjustable width columns", "Tables"),
+            ("float", "Improved interface for floating objects including [H] exact placement", "Figures & Tables"),
             ("geometry", "Flexible and complete interface to document dimensions", "Layout"),
             ("microtype", "Subliminal typographic enhancements and micro-kerning", "Typography"),
             ("fontspec", "Advanced font selection in XeLaTeX / LuaLaTeX", "Typography"),

@@ -136,6 +136,10 @@ pub enum DocumentBlock {
         rows: Vec<TableRow>,
         has_booktabs: bool,
         alignments: Vec<ColumnAlign>,
+        placement: Option<String>,
+        caption_line: Option<usize>,
+        header_line: Option<usize>,
+        row_lines: Vec<usize>,
         line: usize,
     },
     Figure {
@@ -143,6 +147,9 @@ pub enum DocumentBlock {
         label: Option<String>,
         image_path: Option<String>,
         number: usize,
+        placement: Option<String>,
+        image_line: Option<usize>,
+        caption_line: Option<usize>,
         line: usize,
     },
     /// minted / listings / verbatim

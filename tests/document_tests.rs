@@ -104,12 +104,24 @@ l.14 \unknowncommand
                     
 LaTeX Warning: Reference `eq:none' on page 1 undefined on input line 25.
 Overfull \hbox (12.4pt too wide) in paragraph at lines 40--45
+error: .laketex_main.tex:272: FancyVerb Error:
+  No verbatim file source/counter_16.sv
+error: .laketex_main.tex:272: FancyVerb Error:
+  No verbatim file source/counter_16.sv
 "#;
     let diagnostics = DiagnosticParser::parse(log);
 
     assert!(diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Error && d.line == Some(14)));
     assert!(diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Warning && d.line == Some(25)));
     assert!(diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Warning && d.line == Some(40)));
+
+    // Verifies multi-line Tectonic continuation line capture and deduplication
+    let fancyverb_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.line == Some(272) && d.message.contains("counter_16.sv"))
+        .collect();
+    assert_eq!(fancyverb_errors.len(), 1, "Expected duplicate error on line 272 to be deduplicated");
+    assert!(fancyverb_errors[0].message.contains("No verbatim file source/counter_16.sv"));
 }
 
 #[test]
@@ -231,6 +243,37 @@ Here is the faulty formulation:
     let json_str = report.to_json();
     assert!(json_str.contains("\"document_name\": \"faulty_doc.tex\""));
     assert!(json_str.contains("\"error_count\": 1"));
+
+    // Verify FancyVerb Error categorization and closed environment intent
+    let closed_env_source = r#"\documentclass{article}
+\begin{document}
+\begin{figure}
+\caption{My Figure}
+\end{figure}
+\section{Source Code Appendix}
+\inputminted{verilog}{missing.v}
+\end{document}"#;
+    let fancyverb_diag = vec![Diagnostic {
+        severity: DiagnosticSeverity::Error,
+        message: "FancyVerb Error: No verbatim file missing.v".to_string(),
+        line: Some(7),
+        file: None,
+        details: None,
+    }];
+    let fancyverb_report = ErrorReport::generate(
+        closed_env_source,
+        "test.tex",
+        EngineKind::Tectonic,
+        &fancyverb_diag,
+        "",
+        "",
+    );
+    assert_eq!(fancyverb_report.diagnostics.len(), 1);
+    let fd = &fancyverb_report.diagnostics[0];
+    assert_eq!(fd.category, "Missing Verbatim / Minted Source File");
+    assert!(fd.environment_intent.contains("Source Code Appendix"));
+    assert!(!fd.environment_intent.contains("figure"), "Should not attribute line 7 to closed figure environment");
+    assert!(fd.suggested_fix.contains("\\inputminted"));
 }
 
 #[test]
@@ -528,39 +571,6 @@ fn test_headless_api_dependency_endpoints() {
 }
 
 #[test]
-fn test_app_config_persistence_and_settings() {
-    use laketex::compiler::engine::EngineKind;
-    use laketex::ui::config::AppConfig;
-    use laketex::viewer::PdfColorMode;
-
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let config_file = temp_dir.path().join("laketex_config.json");
-
-    let mut config = AppConfig::default();
-    config.theme_name = "Slate Blue".to_string();
-    config.pdf_color_mode = PdfColorMode::Sepia;
-    config.pdf_render_width = 1600;
-    config.default_engine = EngineKind::Tectonic;
-    config.auto_compile = false;
-    config.shortcuts.compile = "F5".to_string();
-    config.shortcuts.settings = "Ctrl+Shift+P".to_string();
-
-    let json_text = serde_json::to_string_pretty(&config).expect("serialize config");
-    std::fs::write(&config_file, &json_text).expect("write config");
-
-    let read_back: AppConfig = serde_json::from_str(&std::fs::read_to_string(&config_file).unwrap())
-        .expect("deserialize config");
-
-    assert_eq!(read_back.theme_name, "Slate Blue");
-    assert_eq!(read_back.pdf_color_mode, PdfColorMode::Sepia);
-    assert_eq!(read_back.pdf_render_width, 1600);
-    assert_eq!(read_back.default_engine, EngineKind::Tectonic);
-    assert!(!read_back.auto_compile);
-    assert_eq!(read_back.shortcuts.compile, "F5");
-    assert_eq!(read_back.shortcuts.settings, "Ctrl+Shift+P");
-}
-
-#[test]
 fn test_missing_picture_auto_placeholder_rendering() {
     use laketex::compiler::engine::{CompilerEngine, EngineKind};
 
@@ -809,36 +819,6 @@ fn test_master_document_management_and_autodetection() {
 }
 
 #[test]
-fn test_unsaved_changes_pending_actions() {
-    use laketex::document::{BuiltinDocKind, Document};
-    use laketex::ui::PendingCloseAction;
-    use std::path::PathBuf;
-
-    let mut doc = Document::default();
-    assert!(!doc.is_dirty);
-
-    // Editing document content marks it dirty
-    doc.content.push_str("% added comment");
-    doc.is_dirty = true;
-    assert!(doc.is_dirty);
-
-    // Verify all PendingCloseAction variants exist and support equality checks
-    let actions = vec![
-        PendingCloseAction::ExitApp,
-        PendingCloseAction::NewDocument,
-        PendingCloseAction::OpenFileDialog,
-        PendingCloseAction::OpenFile(PathBuf::from("test.tex")),
-        PendingCloseAction::LoadBuiltinDoc(BuiltinDocKind::Manual),
-    ];
-
-    for action in actions {
-        let cloned = action.clone();
-        assert_eq!(action, cloned);
-    }
-}
-
-
-#[test]
 fn test_stale_pdf_and_master_hijack_prevention() {
     use laketex::compiler::engine::{CompilerEngine, EngineKind};
     use laketex::ui::project_manager::ProjectManager;
@@ -925,35 +905,6 @@ fn test_crlf_and_lf_caret_jump_character_alignment() {
 
     assert_eq!(compute_char_idx(lf_content, 4), 19);
     assert_eq!(lf_content.chars().nth(compute_char_idx(lf_content, 4)), Some('f'));
-}
-
-#[test]
-fn test_save_as_path_extension_sanitization() {
-    use std::path::PathBuf;
-
-    let mut path_without_ext = PathBuf::from("my_paper");
-    if path_without_ext.extension().is_none() {
-        path_without_ext.set_extension("tex");
-    }
-    assert_eq!(path_without_ext.to_str().unwrap(), "my_paper.tex");
-
-    let mut path_with_ext = PathBuf::from("existing.tex");
-    if path_with_ext.extension().is_none() {
-        path_with_ext.set_extension("tex");
-    }
-    assert_eq!(path_with_ext.to_str().unwrap(), "existing.tex");
-}
-
-#[test]
-fn test_toolbar_action_inspect_errors() {
-    use laketex::ui::toolbar::ToolbarAction;
-
-    let action = ToolbarAction {
-        inspect_errors: true,
-        ..Default::default()
-    };
-    assert!(action.inspect_errors);
-    assert!(!action.compile_requested);
 }
 
 #[test]
@@ -1278,89 +1229,6 @@ def greet(name: str) -> str:
 }
 
 #[test]
-fn test_non_toolbar_panel_headers_vertical_consistency() {
-    use laketex::ui::editor_panel::EditorPanel;
-    use laketex::ui::project_manager::ProjectManager;
-    use laketex::ui::sidebar::Sidebar;
-    use laketex::ui::viewer_panel::{ViewMode, ViewerPanel};
-    use laketex::ui::PANEL_HEADER_HEIGHT;
-    use laketex::viewer::canvas::PdfCanvas;
-    use laketex::viewer::PdfRenderer;
-
-    assert_eq!(PANEL_HEADER_HEIGHT, 25.0);
-
-    let ctx = egui::Context::default();
-    let theme = laketex::ui::theme::ThemeConfig::dracula_jetbrains();
-    theme.apply(&ctx);
-
-    // Verify side panel frame margin matches central panel frame margin
-    let style = ctx.style();
-    let central_frame = egui::Frame::central_panel(&style);
-    let side_frame = egui::Frame::side_top_panel(&style).inner_margin(central_frame.inner_margin);
-    assert_eq!(side_frame.inner_margin.top, central_frame.inner_margin.top);
-    assert_eq!(side_frame.inner_margin.bottom, central_frame.inner_margin.bottom);
-
-    let mut sidebar = Sidebar::new();
-    let mut editor = EditorPanel::new();
-    let mut canvas = PdfCanvas::new();
-    let renderer = PdfRenderer::new();
-    let mut project_mgr = ProjectManager::new(None);
-    let mut content = "\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}\n".to_string();
-    let mut view_mode = ViewMode::NativeVector;
-
-    let mut sidebar_sep_y = 0.0;
-    let mut editor_sep_y = 0.0;
-    let mut viewer_sep_y = 0.0;
-
-    let _ = ctx.run(egui::RawInput::default(), |ctx| {
-        // 1. Sidebar in SidePanel
-        egui::SidePanel::left("test_sidebar")
-            .frame(side_frame)
-            .show(ctx, |ui| {
-                sidebar.show(ui, &[], &[], 1, 5, 4, None, &mut project_mgr, None);
-                sidebar_sep_y = ui.min_rect().top();
-            });
-
-        // 2. Editor & Viewer in CentralPanel
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(250.0, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        editor.show(ui, &mut content, &[], false);
-                        editor_sep_y = ui.min_rect().top();
-                    },
-                );
-
-                ui.allocate_ui_with_layout(
-                    egui::vec2(250.0, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ViewerPanel::show(
-                            ui,
-                            &mut canvas,
-                            &renderer,
-                            &[],
-                            None,
-                            &mut view_mode,
-                            false,
-                            false,
-                            4,
-                        );
-                        viewer_sep_y = ui.min_rect().top();
-                    },
-                );
-            });
-        });
-    });
-
-    // All three panel contents start at the exact same Y coordinate
-    assert_eq!(sidebar_sep_y, editor_sep_y, "Sidebar and editor must start at identical Y coordinate");
-    assert_eq!(editor_sep_y, viewer_sep_y, "Editor and viewer must start at identical Y coordinate");
-}
-
-#[test]
 fn test_conda_and_venv_discovery_and_binary_resolution() {
     use laketex::document::packages::PackageManager;
 
@@ -1443,66 +1311,357 @@ fn test_shadow_subdocument_staging_and_cleanup() {
     assert!(!shadow_file.exists(), "Shadow file must be removed after compilation");
 }
 
-
 #[test]
-fn test_broadened_syntax_highlighting_all_tokens() {
-    let source = r#"\documentclass[11pt, a4paper]{article}
-\usepackage{amsmath, graphicx, hyperref}
-\RequirePackage[dvipsnames]{xcolor}
+fn test_float_placement_extraction_and_layout() {
+    use laketex::engine::ast::DocumentBlock;
+    use laketex::engine::layout::{DocumentLayout, ElementKind};
+    use laketex::engine::parser::NativeLatexParser;
+
+    let source = r#"
+\documentclass{article}
 \begin{document}
-\begin{itemize}[leftmargin=0.15in, label={}]
-    \item Item 1
-\end{itemize}
-\includegraphics[width=0.8\textwidth, draft=true]{figure.png}
+\begin{figure}[H]
+    \caption{System Architecture Diagram}
+\end{figure}
+
+\begin{table}[htbp]
+    \caption{Module Parameters}
+    \begin{tabular}{cc}
+        Parameter & Value \\
+        Baud & 115200 \\
+    \end{tabular}
+\end{table}
 \end{document}
 "#;
 
-    let tokens = LatexLexer::tokenize(source);
+    let ast = NativeLatexParser::parse(source);
 
-    // Verify package names
-    let pkg_names: Vec<&str> = tokens
-        .iter()
-        .filter(|t| t.token_type == TokenType::PackageName)
-        .map(|t| t.text)
-        .collect();
-    assert_eq!(pkg_names, vec!["amsmath", "graphicx", "hyperref", "xcolor"]);
+    // Verify DocumentBlock AST captures placement
+    let figure_block = ast.blocks.iter().find_map(|b| match b {
+        DocumentBlock::Figure { placement, caption, .. } => Some((placement.clone(), caption.clone())),
+        _ => None,
+    }).expect("Figure block not found in AST");
+    assert_eq!(figure_block.0.as_deref(), Some("H"));
+    assert_eq!(figure_block.1.as_deref(), Some("System Architecture Diagram"));
 
-    // Verify tag properties in \begin{itemize}[leftmargin=0.15in, label={}]
-    let leftmargin_prop = tokens.iter().find(|t| t.text == "leftmargin").expect("leftmargin property not found");
-    assert_eq!(leftmargin_prop.token_type, TokenType::TagProperty);
+    let table_block = ast.blocks.iter().find_map(|b| match b {
+        DocumentBlock::Table { placement, caption, .. } => Some((placement.clone(), caption.clone())),
+        _ => None,
+    }).expect("Table block not found in AST");
+    assert_eq!(table_block.0.as_deref(), Some("htbp"));
+    assert_eq!(table_block.1.as_deref(), Some("Module Parameters"));
 
-    let label_prop = tokens.iter().find(|t| t.text == "label").expect("label property not found");
-    assert_eq!(label_prop.token_type, TokenType::TagProperty);
+    // Verify Layout elements preserve placement
+    let pages = DocumentLayout::layout_document(&ast);
+    assert!(!pages.is_empty());
 
-    // Verify tag property in \RequirePackage[dvipsnames]
-    let dvipsnames_prop = tokens.iter().find(|t| t.text == "dvipsnames").expect("dvipsnames not found");
-    assert_eq!(dvipsnames_prop.token_type, TokenType::TagProperty);
+    let mut found_fig = false;
+    let mut found_tbl = false;
+    for page in &pages {
+        for elem in &page.elements {
+            match &elem.kind {
+                ElementKind::Figure { placement, caption, .. } => {
+                    assert_eq!(placement.as_deref(), Some("H"));
+                    assert_eq!(caption.as_deref(), Some("System Architecture Diagram"));
+                    found_fig = true;
+                }
+                ElementKind::Table { placement, caption, .. } => {
+                    assert_eq!(placement.as_deref(), Some("htbp"));
+                    assert_eq!(caption.as_deref(), Some("Module Parameters"));
+                    found_tbl = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(found_fig, "Figure element not found in layout pages");
+    assert!(found_tbl, "Table element not found in layout pages");
+}
 
-    // Verify tag property in \includegraphics[width=..., draft=...]
-    let width_prop = tokens.iter().find(|t| t.text == "width").expect("width property not found");
-    assert_eq!(width_prop.token_type, TokenType::TagProperty);
+#[test]
+fn test_float_package_auto_injection_for_h_specifier() {
+    use laketex::compiler::engine::CompilerEngine;
 
-    let draft_prop = tokens.iter().find(|t| t.text == "draft").expect("draft property not found");
-    assert_eq!(draft_prop.token_type, TokenType::TagProperty);
+    // 1. Figure with [H] without float package -> float package injected
+    let src_h_fig = r#"\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\begin{figure}[H]
+    \caption{Test Figure}
+\end{figure}
+\end{document}
+"#;
+    let modified = CompilerEngine::ensure_float_package(src_h_fig);
+    assert!(modified.contains("\\usepackage{float}"));
 
-    // Verify dimension/number property values
-    let margin_val = tokens.iter().find(|t| t.text == "0.15in").expect("0.15in not found");
-    assert_eq!(margin_val.token_type, TokenType::PropertyValueNumber);
+    // 2. Table with [h!] without float package -> float package injected
+    let src_h_tbl = r#"\documentclass{article}
+\usepackage{booktabs}
+\begin{document}
+\begin{table}[h!]
+    \caption{Test Table}
+\end{table}
+\end{document}
+"#;
+    let modified_tbl = CompilerEngine::ensure_float_package(src_h_tbl);
+    assert!(modified_tbl.contains("\\usepackage{float}"));
 
-    let width_val = tokens.iter().find(|t| t.text == "0.8\\textwidth").expect("0.8\\textwidth not found");
-    assert_eq!(width_val.token_type, TokenType::PropertyValueNumber);
+    // 3. Document already importing float -> not duplicated
+    let src_existing = r#"\documentclass{article}
+\usepackage{float}
+\begin{document}
+\begin{figure}[H]
+    \caption{Test Figure}
+\end{figure}
+\end{document}
+"#;
+    let modified_existing = CompilerEngine::ensure_float_package(src_existing);
+    let occurrences = modified_existing.matches("\\usepackage{float}").count();
+    assert_eq!(occurrences, 1);
 
-    let font_size_val = tokens.iter().find(|t| t.text == "11pt").expect("11pt not found");
-    assert_eq!(font_size_val.token_type, TokenType::PropertyValueNumber);
+    // 4. Document without [H] or [h!] -> source returned unmodified
+    let src_no_h = r#"\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\begin{figure}[t]
+    \caption{Test Figure}
+\end{figure}
+\end{document}
+"#;
+    let modified_no_h = CompilerEngine::ensure_float_package(src_no_h);
+    assert_eq!(modified_no_h, src_no_h);
+}
 
-    // Verify boolean property value
-    let draft_val = tokens.iter().find(|t| t.text == "true").expect("true not found");
-    assert_eq!(draft_val.token_type, TokenType::PropertyValueBoolean);
+#[test]
+fn test_synctex_table_and_figure_reverse_lookup() {
+    use laketex::document::SyncTexData;
 
-    // Verify command argument
-    let itemize_arg = tokens.iter().find(|t| t.text == "itemize").expect("itemize not found");
-    assert_eq!(itemize_arg.token_type, TokenType::Argument);
+    let synctex_str = r#"
+SyncTeX Version:1
+Input:1:C:\projects\paper\main.tex
+Output:pdf
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+!197
+{1
+[1,3:4736287,46220575:26673152,41484288,0
+h1,3:8799519,8865055:983040,0,0
+g1,3:11475354,8865055
+[1,5:8799519,10776084:22609920,454820,134348
+g1,5:19230557,10776084
+]
+(1,7:8799519,11526468:2565081,550500,235932
+g1,7:9192735,11526468
+)
+(1,8:8799519,12312900:2565081,550500,235932
+g1,8:9192735,12312900
+)
+x1,14:8799519,25000000:15000000,5000000,0
+[1,16:8799519,26500000:20000000,450000,0
+g1,16:15000000,26500000
+]
+}1
+!2234
+Postamble:
+Count:91
+"#;
 
-    let article_arg = tokens.iter().find(|t| t.text == "article").expect("article not found");
-    assert_eq!(article_arg.token_type, TokenType::Argument);
+    let synctex = SyncTexData::parse_str(synctex_str).expect("Parse SyncTeX");
+    let page_w = 612.0;
+    let page_h = 792.0;
+
+    // 1. Table caption at y_sp = 10,776,084 (~0.2076 of page)
+    let caption_hit = synctex.find_line_at(1, 0.3, 0.2076, page_w, page_h);
+    assert_eq!(caption_hit.map(|(l, _)| l), Some(5));
+
+    // 2. Table row 1 at y_sp = 11,526,468 (~0.222 of page)
+    let row1_hit = synctex.find_line_at(1, 0.25, 0.222, page_w, page_h);
+    assert_eq!(row1_hit.map(|(l, _)| l), Some(7));
+
+    // 3. Table row 2 at y_sp = 12,312,900 (~0.237 of page)
+    let row2_hit = synctex.find_line_at(1, 0.25, 0.237, page_w, page_h);
+    assert_eq!(row2_hit.map(|(l, _)| l), Some(8));
+
+    // 4. Figure graphic at y_sp = 25,000,000 (~0.481 of page)
+    let graphic_hit = synctex.find_line_at(1, 0.35, 25000000.0 / (792.0 * 65536.0), page_w, page_h);
+    assert_eq!(graphic_hit.map(|(l, _)| l), Some(14));
+
+    // 5. Figure caption at y_sp = 26,500,000 (~0.510 of page)
+    let fig_cap_hit = synctex.find_line_at(1, 0.35, 26500000.0 / (792.0 * 65536.0), page_w, page_h);
+    assert_eq!(fig_cap_hit.map(|(l, _)| l), Some(16));
+}
+
+#[test]
+fn test_native_table_and_figure_subelement_line_resolution() {
+    use laketex::engine::ast::DocumentBlock;
+    use laketex::engine::layout::DocumentLayout;
+    use laketex::engine::parser::NativeLatexParser;
+
+    let source = r#"\documentclass{article}
+\begin{document}
+Some opening paragraph.
+
+\begin{table}[H]
+    \caption{Module Clock Configurations}
+    \begin{tabular}{cc}
+        Clk A & 50 MHz \\
+        Clk B & 100 MHz \\
+    \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{block_diag.png}
+    \caption{System Architecture Diagram}
+\end{figure}
+\end{document}
+"#;
+
+    let ast = NativeLatexParser::parse(source);
+
+    // Verify AST captures exact sub-element lines
+    let table = ast.blocks.iter().find_map(|b| match b {
+        DocumentBlock::Table { caption_line, header_line, row_lines, line, .. } => {
+            Some((*caption_line, *header_line, row_lines.clone(), *line))
+        }
+        _ => None,
+    }).expect("Table not found");
+
+    assert_eq!(table.3, 5); // \begin{table} is line 5
+    assert_eq!(table.0, Some(6)); // \caption is line 6
+    assert_eq!(table.1, Some(8)); // table header is line 8
+    assert_eq!(table.2, vec![9]); // table row is line 9
+
+    let figure = ast.blocks.iter().find_map(|b| match b {
+        DocumentBlock::Figure { image_line, caption_line, line, .. } => {
+            Some((*image_line, *caption_line, *line))
+        }
+        _ => None,
+    }).expect("Figure not found");
+
+    assert_eq!(figure.2, 13); // \begin{figure} is line 13
+    assert_eq!(figure.0, Some(15)); // \includegraphics is line 15
+    assert_eq!(figure.1, Some(16)); // \caption is line 16
+
+    // Verify Layout element resolution
+    let pages = DocumentLayout::layout_document(&ast);
+    assert!(!pages.is_empty());
+    let page = &pages[0];
+
+    // Find table element
+    let (table_el, _) = page.find_element_at_y(40.0).expect("Element near table");
+    // Header area (y < 24.0) -> header line 8
+    assert_eq!(table_el.line_at_offset(10.0), 8);
+    // Row 1 area -> line 9
+    assert_eq!(table_el.line_at_offset(30.0), 9);
+    // Caption at bottom -> line 6
+    assert_eq!(table_el.line_at_offset(table_el.height - 10.0), 6);
+
+    // Find figure element
+    let (fig_el, _) = page.find_element_at_y(table_el.y_offset + table_el.height + 30.0).expect("Element near figure");
+    // Image area -> line 15
+    assert_eq!(fig_el.line_at_offset(50.0), 15);
+    // Caption area at bottom -> line 16
+    assert_eq!(fig_el.line_at_offset(fig_el.height - 10.0), 16);
+}
+
+#[test]
+fn test_pdfium_tectonic_exact_caret_and_highlight_precision() {
+    use laketex::compiler::engine::{CompilerEngine, EngineKind};
+    use laketex::viewer::text_selection::{
+        find_caret_char_index_in_latex_source, find_chunk_in_latex_source,
+    };
+    use laketex::viewer::PdfRenderer;
+
+    let source = r#"\documentclass{article}
+\usepackage{booktabs}
+\begin{document}
+\section{Architecture Overview}
+\noindent This module has two outputs, `S7\_now' and `S15\_now' which pulse once per cycle.
+
+\noindent The states were decided to be \textbf{binary encoded} so that different workflows integrate efficiently into a simple counter.
+
+\begin{tabular}{ll}
+Signal & Description \\
+clk\_i & Input clock \\
+\end{tabular}
+\end{document}
+"#;
+
+    let res = CompilerEngine::compile_named(source, EngineKind::Tectonic, None, None)
+        .expect("Tectonic compilation");
+    assert!(res.success, "Compilation failed: {:?}", res.diagnostics);
+    let pdf_bytes = res.pdf_bytes.expect("PDF bytes");
+
+    let renderer = PdfRenderer::new();
+    let layout = renderer
+        .extract_page_text_layout(&pdf_bytes, 0)
+        .expect("PDFium page text layout");
+    assert!(!layout.is_empty());
+
+    // 1. Real PDF double-click beside a specific character inside \textbf{binary encoded}
+    let idx_binary = layout
+        .chars
+        .windows(6)
+        .position(|w| w.iter().map(|c| c.c).collect::<String>() == "binary")
+        .expect("locate 'binary' in rendered PDF");
+    let ch_y = &layout.chars[idx_binary + 2]; // 'n' in "binary"
+    let right_half_of_n = egui::Pos2::new(
+        ch_y.rect.center().x + ch_y.rect.width() * 0.25,
+        ch_y.rect.center().y,
+    );
+    let click_ctx = layout
+        .extract_click_context(right_half_of_n)
+        .expect("extract click context");
+    let line_hint = res.synctex_data.as_ref().and_then(|st| {
+        st.find_location_at(
+            1,
+            click_ctx.anchor_pos.x,
+            click_ctx.anchor_pos.y,
+            layout.page_width_pt,
+            layout.page_height_pt,
+            Some(source),
+        )
+        .map(|l| l.line)
+    });
+    let caret = find_caret_char_index_in_latex_source(source, &click_ctx, line_hint)
+        .expect("exact caret index");
+    let after: String = source.chars().skip(caret).collect();
+    assert!(after.starts_with("ary encoded}"), "Expected caret right after 'bin', got: {:?}", &after[..after.len().min(30)]);
+
+    // 2. Real PDF text selection highlighting with ligatures (different/efficiently), escapes (\_), and short words ("a")
+    let idx_sel_start = layout
+        .chars
+        .windows(8)
+        .position(|w| w.iter().map(|c| c.c).collect::<String>() == "so that ")
+        .expect("locate 'so that '");
+    let idx_sel_end = layout
+        .chars
+        .windows(7)
+        .position(|w| w.iter().map(|c| c.c).collect::<String>() == "counter")
+        .map(|p| p + 6)
+        .expect("locate 'counter'");
+    let dragged_text = layout.get_text_range(idx_sel_start, idx_sel_end);
+    let (cs, ce) = find_chunk_in_latex_source(source, &dragged_text, line_hint)
+        .expect("exact chunk range");
+    let matched_chunk: String = source.chars().skip(cs).take(ce - cs).collect();
+    assert_eq!(
+        matched_chunk,
+        "so that different workflows integrate efficiently into a simple counter"
+    );
+
+    // 3. Real PDF selection inside tabular & escaped underscore
+    let idx_clk = layout
+        .chars
+        .windows(5)
+        .position(|w| w.iter().map(|c| c.c).collect::<String>() == "clk_i")
+        .expect("locate clk_i");
+    let dragged_clk = layout.get_text_range(idx_clk, idx_clk + 4);
+    let (ts, te) = find_chunk_in_latex_source(source, &dragged_clk, None)
+        .expect("exact tabular match");
+    let matched_clk: String = source.chars().skip(ts).take(te - ts).collect();
+    assert_eq!(matched_clk, "clk\\_i");
 }

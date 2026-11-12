@@ -5,6 +5,7 @@
 
 use crate::compiler::engine::EngineKind;
 use crate::ui::viewer_panel::ViewMode;
+pub use crate::viewer::canvas::PageViewMode;
 use crate::viewer::PdfColorMode;
 use egui::{Key, Modifiers};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,9 @@ pub struct AppConfig {
 
     /// Default preview mode (Native Vector vs PDF Vector View)
     pub view_mode: ViewMode,
+
+    /// Page display layout mode (Continuous scroll like Overleaf vs Single page click-through)
+    pub page_view_mode: PageViewMode,
 
     /// Default typesetting engine (Native, Tectonic, pdfLaTeX, XeLaTeX, LuaLaTeX)
     pub default_engine: EngineKind,
@@ -58,6 +62,7 @@ impl Default for AppConfig {
             pdf_color_mode: PdfColorMode::Normal,
             pdf_render_width: 1200,
             view_mode: ViewMode::PdfRaster,
+            page_view_mode: PageViewMode::Continuous,
             default_engine: EngineKind::Tectonic,
             auto_compile: true,
             fit_to_width: true,

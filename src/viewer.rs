@@ -3,8 +3,11 @@
 pub mod canvas;
 pub mod color_mode;
 pub mod parity;
+pub mod text_selection;
 
+pub use canvas::PageViewMode;
 pub use color_mode::PdfColorMode;
+pub use text_selection::{PageTextLayout, PdfCharLayout, PdfLineLayout};
 
 use crate::error::{LakeTexError, Result};
 use egui::ColorImage;
@@ -196,6 +199,107 @@ impl PdfRenderer {
             PdfColorMode::Normal
         };
         self.render_page_to_color_image_with_mode(pdf_bytes, page_index, target_width, mode)
+    }
+
+    /// Extracts character positions, bounding boxes, and text lines from a rendered PDF page.
+    pub fn extract_page_text_layout(
+        &self,
+        pdf_bytes: &[u8],
+        page_index: usize,
+    ) -> Result<PageTextLayout> {
+        let pdfium = match Self::global_pdfium() {
+            Ok(p) => p,
+            Err(err) => {
+                return Err(LakeTexError::PdfRender(format!(
+                    "PDFium engine is not available: {err}"
+                )))
+            }
+        };
+
+        let doc = pdfium
+            .load_pdf_from_byte_slice(pdf_bytes, None)
+            .map_err(|e| LakeTexError::PdfRender(format!("Failed to load PDF: {e}")))?;
+
+        let page_count = doc.pages().len() as usize;
+        if page_count == 0 || page_index >= page_count {
+            return Ok(PageTextLayout {
+                page: page_index,
+                ..Default::default()
+            });
+        }
+
+        let target_page_idx = page_index as i32;
+        let page = doc
+            .pages()
+            .get(target_page_idx)
+            .map_err(|e| LakeTexError::PdfRender(format!("Failed to get page {target_page_idx}: {e}")))?;
+
+        let page_w = page.width().value.max(1.0);
+        let page_h = page.height().value.max(1.0);
+
+        let text = page
+            .text()
+            .map_err(|e| LakeTexError::PdfRender(format!("Failed to extract page text: {e}")))?;
+
+        let total_chars = text.len() as usize;
+        let mut chars = Vec::with_capacity(total_chars);
+        let mut full_text = String::with_capacity(total_chars);
+
+        for (i, ch) in text.chars().iter().enumerate() {
+            let u_char = ch.unicode_char().unwrap_or(' ');
+            full_text.push(u_char);
+
+            let bounds = ch.loose_bounds().or_else(|_| ch.tight_bounds()).ok();
+            let norm_rect = if let Some(b) = bounds {
+                let min_x = (b.left().value / page_w).clamp(0.0, 1.0);
+                let max_x = (b.right().value / page_w).clamp(0.0, 1.0);
+                let min_y = ((page_h - b.top().value) / page_h).clamp(0.0, 1.0);
+                let max_y = ((page_h - b.bottom().value) / page_h).clamp(0.0, 1.0);
+                egui::Rect::from_min_max(
+                    egui::Pos2::new(min_x.min(max_x), min_y.min(max_y)),
+                    egui::Pos2::new(min_x.max(max_x), min_y.max(max_y)),
+                )
+            } else {
+                egui::Rect::ZERO
+            };
+
+            chars.push(PdfCharLayout {
+                c: u_char,
+                rect: norm_rect,
+                index: i,
+            });
+        }
+
+        let segments = text.segments();
+        let mut lines = Vec::with_capacity(segments.len());
+        for i in 0..segments.len() {
+            if let Ok(seg) = segments.get(i) {
+                let b = seg.bounds();
+                let min_x = (b.left().value / page_w).clamp(0.0, 1.0);
+                let max_x = (b.right().value / page_w).clamp(0.0, 1.0);
+                let min_y = ((page_h - b.top().value) / page_h).clamp(0.0, 1.0);
+                let max_y = ((page_h - b.bottom().value) / page_h).clamp(0.0, 1.0);
+                let norm_rect = egui::Rect::from_min_max(
+                    egui::Pos2::new(min_x.min(max_x), min_y.min(max_y)),
+                    egui::Pos2::new(min_x.max(max_x), min_y.max(max_y)),
+                );
+                lines.push(PdfLineLayout {
+                    char_start: 0,
+                    char_end: 0,
+                    rect: norm_rect,
+                    text: seg.text(),
+                });
+            }
+        }
+
+        Ok(PageTextLayout {
+            page: page_index,
+            chars,
+            lines,
+            full_text,
+            page_width_pt: page_w,
+            page_height_pt: page_h,
+        })
     }
 }
 

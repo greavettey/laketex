@@ -5,8 +5,10 @@ pub mod builtin_docs;
 pub mod lexer;
 pub mod outline;
 pub mod packages;
+pub mod synctex;
 
 pub use builtin_docs::{BuiltinDoc, BuiltinDocKind};
+pub use synctex::SyncTexData;
 use outline::{OutlineItem, OutlineParser};
 use packages::{PackageInfo, PackageManager};
 use std::path::{Path, PathBuf};

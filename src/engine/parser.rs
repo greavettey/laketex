@@ -297,6 +297,9 @@ impl NativeLatexParser {
                         label: None,
                         image_path: img_path,
                         number: figure_counter,
+                        placement: None,
+                        image_line: Some(start_line),
+                        caption_line: None,
                         line: start_line,
                     });
                 } else {
@@ -470,6 +473,9 @@ impl NativeLatexParser {
                     label: None,
                     image_path: Some(format!("Vector Diagram ({env_name})")),
                     number: figure_counter,
+                    placement: None,
+                    image_line: Some(start_line),
+                    caption_line: None,
                     line: start_line,
                 });
                 continue;
@@ -663,18 +669,25 @@ impl NativeLatexParser {
             }
 
             if line.contains("\\begin{figure}") || line.contains("\\begin{figure*}") {
+                let placement = Self::extract_bracket_content(line, "\\begin{figure}")
+                    .or_else(|| Self::extract_bracket_content(line, "\\begin{figure*}"));
                 let mut caption = None;
+                let mut caption_line = None;
                 let mut label = None;
                 let mut image_path = None;
+                let mut image_line = None;
                 i += 1;
                 while i < lines.len() && !lines[i].contains("\\end{figure") {
                     let fig_line = lines[i].trim();
+                    let cur_line_num = i + 1;
                     if fig_line.contains("\\caption{") {
                         caption = Self::extract_brace_content(fig_line, "\\caption");
+                        caption_line = Some(cur_line_num);
                     } else if fig_line.contains("\\label{") {
                         label = Self::extract_brace_content(fig_line, "\\label");
                     } else if fig_line.contains("\\includegraphics") {
                         image_path = Self::extract_brace_content(fig_line, "\\includegraphics");
+                        image_line = Some(cur_line_num);
                     } else if fig_line.contains("\\begin{tikzpicture}")
                         || fig_line.contains("\\begin{semilogxaxis}")
                         || fig_line.contains("\\begin{axis}")
@@ -682,6 +695,7 @@ impl NativeLatexParser {
                     {
                         if image_path.is_none() {
                             image_path = Some("Vector Graphic / Plot".to_string());
+                            image_line = Some(cur_line_num);
                         }
                     }
                     i += 1;
@@ -695,6 +709,9 @@ impl NativeLatexParser {
                     label,
                     image_path,
                     number: figure_counter,
+                    placement,
+                    image_line,
+                    caption_line,
                     line: start_line,
                 });
                 continue;
@@ -708,6 +725,9 @@ impl NativeLatexParser {
                     label: None,
                     image_path,
                     number: figure_counter,
+                    placement: None,
+                    image_line: Some(start_line),
+                    caption_line: None,
                     line: start_line,
                 });
                 i += 1;
@@ -715,15 +735,21 @@ impl NativeLatexParser {
             }
 
             if line.contains("\\begin{table}") || line.contains("\\begin{tabular}") {
+                let placement = Self::extract_bracket_content(line, "\\begin{table}")
+                    .or_else(|| Self::extract_bracket_content(line, "\\begin{table*}"));
                 let mut caption = None;
+                let mut caption_line = None;
+                let mut header_line = None;
                 let mut label = None;
                 let mut headers = Vec::new();
                 let mut rows = Vec::new();
+                let mut row_lines = Vec::new();
                 let mut has_booktabs = false;
                 let mut alignments = Vec::new();
 
                 while i < lines.len() {
                     let t_line = lines[i].trim();
+                    let cur_tbl_line_num = i + 1;
                     if t_line.contains("\\begin{tabular") {
                         if let Some(spec) = Self::extract_brace_content(t_line, "\\begin{tabular") {
                             alignments = Self::parse_column_alignments(&spec);
@@ -740,6 +766,7 @@ impl NativeLatexParser {
 
                     if t_line.contains("\\caption{") {
                         caption = Self::extract_brace_content(t_line, "\\caption");
+                        caption_line = Some(cur_tbl_line_num);
                     } else if t_line.contains("\\label{") {
                         label = Self::extract_brace_content(t_line, "\\label");
                     } else if t_line.contains('&') {
@@ -755,6 +782,7 @@ impl NativeLatexParser {
                                 .iter()
                                 .map(|s| Self::clean_inline_str(&Self::clean_cell_content(s)))
                                 .collect();
+                            header_line = Some(cur_tbl_line_num);
                         } else {
                             let cell_spans: Vec<Vec<InlineSpan>> = cells_str
                                 .iter()
@@ -764,6 +792,7 @@ impl NativeLatexParser {
                                 cells: cell_spans,
                                 is_header,
                             });
+                            row_lines.push(cur_tbl_line_num);
                         }
                     }
 
@@ -782,6 +811,10 @@ impl NativeLatexParser {
                     rows,
                     has_booktabs,
                     alignments,
+                    placement,
+                    caption_line,
+                    header_line,
+                    row_lines,
                     line: start_line,
                 });
                 continue;
@@ -824,6 +857,19 @@ impl NativeLatexParser {
         }
 
         ast
+    }
+
+    /// Extracts content inside optional square brackets `[...]` immediately following command.
+    pub fn extract_bracket_content(line: &str, command: &str) -> Option<String> {
+        if let Some(pos) = line.find(command) {
+            let rest = line[pos + command.len()..].trim_start_matches('*').trim_start();
+            if rest.starts_with('[') {
+                if let Some(bracket_end) = rest.find(']') {
+                    return Some(rest[1..bracket_end].trim().to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Extracts the contents inside curly braces `{...}` following a specified command name.
